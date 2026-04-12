@@ -38,7 +38,7 @@ class SubmissionPrepare(APITestCase):
         problem_data["created_by"] = user
         self.problem = Problem.objects.create(**problem_data)
         for tag in tags:
-            tag = ProblemTag.objects.create(name=tag)
+            tag = ProblemTag.objects.create(name=tag, normalized_name=tag.lower())
             self.problem.tags.add(tag)
         self.problem.save()
         self.submission_data = deepcopy(DEFAULT_SUBMISSION_DATA)

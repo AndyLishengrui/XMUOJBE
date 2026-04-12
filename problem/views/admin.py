@@ -8,7 +8,7 @@ from wsgiref.util import FileWrapper
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Q, Count
 from django.http import StreamingHttpResponse, FileResponse
 
 from account.decorators import problem_permission_required, ensure_created_by
@@ -27,7 +27,10 @@ from ..serializers import (CreateContestProblemSerializer, CompileSPJSerializer,
                            ProblemAdminSerializer, TestCaseUploadForm, ContestProblemMakePublicSerializer,
                            AddContestProblemSerializer, ExportProblemSerializer,
                            ExportProblemRequestSerialzier, UploadProblemForm, ImportProblemSerializer,
-                           FPSProblemSerializer)
+               FPSProblemSerializer, ProblemTagAdminSerializer, UpsertProblemTagSerializer,
+               MergeProblemTagSerializer)
+from ..tag import (assign_problem_tags, clean_tag_aliases, clean_tag_name,
+           normalize_problem_tag_instance, serialize_problem_tag_audit, merge_problem_tags)
 from ..utils import TEMPLATE_BASE, build_problem_template
 
 
@@ -172,6 +175,119 @@ class CompileSPJAPI(APIView):
             return self.success()
 
 
+class ProblemTagAdminAPI(APIView):
+    @problem_permission_required
+    def get(self, request):
+        keyword = request.GET.get("keyword")
+        include_inactive = request.GET.get("include_inactive") == "true"
+        only_used = request.GET.get("only_used") == "true"
+        queryset = ProblemTag.objects.all()
+        if not include_inactive:
+            queryset = queryset.filter(is_active=True)
+        if keyword:
+            cleaned_keyword = clean_tag_name(keyword)
+            queryset = queryset.filter(Q(name__icontains=cleaned_keyword) |
+                                       Q(normalized_name__icontains=cleaned_keyword.lower()))
+        queryset = queryset.annotate(problem_count=Count("problem", distinct=True))
+        if only_used:
+            queryset = queryset.filter(problem_count__gt=0)
+        queryset = queryset.order_by("rank", "name", "id")
+        return self.success(ProblemTagAdminSerializer(queryset, many=True).data)
+
+    @problem_permission_required
+    @validate_serializer(UpsertProblemTagSerializer)
+    def post(self, request):
+        data = request.data
+        normalized_name = clean_tag_name(data["name"]).lower()
+        matched_tag = None
+        for tag in ProblemTag.objects.all().order_by("rank", "id"):
+            normalized_candidates = [tag.normalized_name or clean_tag_name(tag.name).lower()]
+            normalized_candidates.extend(clean_tag_name(alias).lower() for alias in (tag.aliases or []))
+            if normalized_name in normalized_candidates:
+                matched_tag = tag
+                break
+        if matched_tag is None:
+            matched_tag = ProblemTag(name=data["name"])
+            matched_tag.aliases = clean_tag_aliases(data.get("aliases", []), canonical_name=data["name"])
+            matched_tag.is_active = data.get("is_active", True)
+            matched_tag.rank = data.get("rank", matched_tag.rank or 0)
+            matched_tag.description = data.get("description")
+            normalize_problem_tag_instance(matched_tag)
+            matched_tag.save()
+        else:
+            alias_candidates = list(matched_tag.aliases or [])
+            if data["name"] != matched_tag.name and data["name"] not in alias_candidates:
+                alias_candidates.append(data["name"])
+            alias_candidates.extend(data.get("aliases", []))
+            matched_tag.aliases = clean_tag_aliases(alias_candidates, canonical_name=matched_tag.name)
+            matched_tag.is_active = data.get("is_active", matched_tag.is_active)
+            matched_tag.rank = data.get("rank", matched_tag.rank)
+            if "description" in data:
+                matched_tag.description = data.get("description")
+            normalize_problem_tag_instance(matched_tag)
+            matched_tag.save()
+        matched_tag = ProblemTag.objects.annotate(problem_count=Count("problem", distinct=True)).get(id=matched_tag.id)
+        return self.success(ProblemTagAdminSerializer(matched_tag).data)
+
+    @problem_permission_required
+    @validate_serializer(UpsertProblemTagSerializer)
+    def put(self, request):
+        tag_id = request.data.get("id")
+        if not tag_id:
+            return self.error("Tag id is required")
+        try:
+            tag = ProblemTag.objects.get(id=tag_id)
+        except ProblemTag.DoesNotExist:
+            return self.error("Tag does not exist")
+        normalized_name = clean_tag_name(request.data["name"]).lower()
+        for other_tag in ProblemTag.objects.exclude(id=tag.id):
+            normalized_candidates = [other_tag.normalized_name or clean_tag_name(other_tag.name).lower()]
+            normalized_candidates.extend(clean_tag_name(alias).lower() for alias in (other_tag.aliases or []))
+            if normalized_name in normalized_candidates:
+                return self.error("Tag name conflicts with an existing tag", "invalid-tags")
+        tag.name = request.data["name"]
+        tag.aliases = clean_tag_aliases(request.data.get("aliases", []), canonical_name=request.data["name"])
+        tag.is_active = request.data.get("is_active", tag.is_active)
+        tag.rank = request.data.get("rank", tag.rank)
+        tag.description = request.data.get("description")
+        normalize_problem_tag_instance(tag)
+        tag.save()
+        tag = ProblemTag.objects.annotate(problem_count=Count("problem", distinct=True)).get(id=tag.id)
+        return self.success(ProblemTagAdminSerializer(tag).data)
+
+
+class ProblemTagAuditAPI(APIView):
+    @problem_permission_required
+    def get(self, request):
+        try:
+            low_frequency_threshold = int(request.GET.get("low_frequency_threshold", 2))
+        except ValueError:
+            low_frequency_threshold = 2
+        if low_frequency_threshold < 1:
+            low_frequency_threshold = 1
+        return self.success(serialize_problem_tag_audit(low_frequency_threshold=low_frequency_threshold))
+
+
+class ProblemTagMergeAPI(APIView):
+    @problem_permission_required
+    @validate_serializer(MergeProblemTagSerializer)
+    def post(self, request):
+        target_tag_id = request.data["target_tag_id"]
+        source_tag_ids = request.data["source_tag_ids"]
+        try:
+            target_tag = ProblemTag.objects.get(id=target_tag_id)
+        except ProblemTag.DoesNotExist:
+            return self.error("Target tag does not exist")
+
+        source_tags = list(ProblemTag.objects.filter(id__in=source_tag_ids).order_by("rank", "name", "id"))
+        if len(source_tags) != len(source_tag_ids):
+            return self.error("One or more source tags do not exist")
+
+        merged_tag = merge_problem_tags(target_tag, source_tags)
+        merged_tag = ProblemTag.objects.annotate(problem_count=Count("problem", distinct=True)).get(id=merged_tag.id)
+        return self.success(ProblemTagAdminSerializer(merged_tag).data)
+
+
 class ProblemBase(APIView):
     def common_checks(self, request):
         data = request.data
@@ -195,6 +311,9 @@ class ProblemBase(APIView):
             data["total_score"] = total_score
         data["languages"] = list(data["languages"])
 
+    def sync_tags(self, problem, tags):
+        assign_problem_tags(problem, tags, allow_create=False)
+
 
 class ProblemAPI(ProblemBase):
     @problem_permission_required
@@ -215,13 +334,11 @@ class ProblemAPI(ProblemBase):
         tags = data.pop("tags")
         data["created_by"] = request.user
         problem = Problem.objects.create(**data)
-
-        for item in tags:
-            try:
-                tag = ProblemTag.objects.get(name=item)
-            except ProblemTag.DoesNotExist:
-                tag = ProblemTag.objects.create(name=item)
-            problem.tags.add(tag)
+        try:
+            self.sync_tags(problem, tags)
+        except APIError as error:
+            problem.delete()
+            return self.error(error.msg, error.err)
         return self.success(ProblemAdminSerializer(problem).data)
 
     @problem_permission_required
@@ -279,14 +396,10 @@ class ProblemAPI(ProblemBase):
         for k, v in data.items():
             setattr(problem, k, v)
         problem.save()
-
-        problem.tags.remove(*problem.tags.all())
-        for tag in tags:
-            try:
-                tag = ProblemTag.objects.get(name=tag)
-            except ProblemTag.DoesNotExist:
-                tag = ProblemTag.objects.create(name=tag)
-            problem.tags.add(tag)
+        try:
+            self.sync_tags(problem, tags)
+        except APIError as error:
+            return self.error(error.msg, error.err)
 
         return self.success()
 
@@ -336,13 +449,11 @@ class ContestProblemAPI(ProblemBase):
         tags = data.pop("tags")
         data["created_by"] = request.user
         problem = Problem.objects.create(**data)
-
-        for item in tags:
-            try:
-                tag = ProblemTag.objects.get(name=item)
-            except ProblemTag.DoesNotExist:
-                tag = ProblemTag.objects.create(name=item)
-            problem.tags.add(tag)
+        try:
+            self.sync_tags(problem, tags)
+        except APIError as error:
+            problem.delete()
+            return self.error(error.msg, error.err)
         return self.success(ProblemAdminSerializer(problem).data)
 
     def get(self, request):
@@ -409,14 +520,10 @@ class ContestProblemAPI(ProblemBase):
         for k, v in data.items():
             setattr(problem, k, v)
         problem.save()
-
-        problem.tags.remove(*problem.tags.all())
-        for tag in tags:
-            try:
-                tag = ProblemTag.objects.get(name=tag)
-            except ProblemTag.DoesNotExist:
-                tag = ProblemTag.objects.create(name=tag)
-            problem.tags.add(tag)
+        try:
+            self.sync_tags(problem, tags)
+        except APIError as error:
+            return self.error(error.msg, error.err)
         return self.success()
 
     def delete(self, request):
@@ -619,9 +726,10 @@ class ImportProblemAPI(CSRFExemptAPIView, TestCaseZipProcessor):
                                                              if rule_type == ProblemRuleType.OI else 0,
                                                              test_case_id=test_case_id
                                                              )
-                        for tag_name in problem_info["tags"]:
-                            tag_obj, _ = ProblemTag.objects.get_or_create(name=tag_name)
-                            problem_obj.tags.add(tag_obj)
+                        try:
+                            assign_problem_tags(problem_obj, problem_info["tags"], allow_create=False)
+                        except APIError as error:
+                            return self.error(error.msg, error.err)
         return self.success({"import_count": count})
 
 

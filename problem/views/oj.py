@@ -1,9 +1,10 @@
 import random
-from django.db.models import Q, Count
+from django.db.models import Q
 from utils.api import APIView
 from account.decorators import check_contest_permission
-from ..models import ProblemTag, Problem, ProblemRuleType
+from ..models import Problem, ProblemRuleType
 from ..serializers import ProblemSerializer, TagSerializer, ProblemSafeSerializer
+from ..tag import get_problem_tag_queryset, normalize_tag_name
 from contest.models import ContestRuleType
 
 import hashlib
@@ -20,11 +21,8 @@ from utils.api import APIError
 
 class ProblemTagAPI(APIView):
     def get(self, request):
-        qs = ProblemTag.objects
         keyword = request.GET.get("keyword")
-        if keyword:
-            qs = ProblemTag.objects.filter(name__icontains=keyword)
-        tags = qs.annotate(problem_count=Count("problem")).filter(problem_count__gt=0)
+        tags = get_problem_tag_queryset(keyword=keyword, only_used=True).order_by("-problem_count", "rank", "name", "id")
         return self.success(TagSerializer(tags, many=True).data)
 
 
@@ -77,7 +75,9 @@ class ProblemAPI(APIView):
         # 按照标签筛选
         tag_text = request.GET.get("tag")
         if tag_text:
-            problems = problems.filter(tags__name=tag_text)
+            normalized_tag = normalize_tag_name(tag_text)
+            problems = problems.filter(Q(tags__normalized_name=normalized_tag) |
+                                       Q(tags__name=tag_text)).distinct()
 
         # 搜索的情况
         keyword = request.GET.get("keyword", "").strip()

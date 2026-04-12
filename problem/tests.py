@@ -6,6 +6,7 @@ from datetime import timedelta
 from zipfile import ZipFile
 
 from django.conf import settings
+from django.core.management import call_command
 
 from utils.api.tests import APITestCase
 
@@ -61,17 +62,56 @@ class ProblemCreateTestBase(APITestCase):
             try:
                 tag = ProblemTag.objects.get(name=item)
             except ProblemTag.DoesNotExist:
-                tag = ProblemTag.objects.create(name=item)
+                tag = ProblemTag.objects.create(name=item, normalized_name=item.lower())
             problem.tags.add(tag)
         return problem
 
 
 class ProblemTagListAPITest(APITestCase):
     def test_get_tag_list(self):
-        ProblemTag.objects.create(name="name1")
-        ProblemTag.objects.create(name="name2")
+        ProblemTag.objects.create(name="name1", normalized_name="name1")
+        ProblemTag.objects.create(name="name2", normalized_name="name2")
         resp = self.client.get(self.reverse("problem_tag_list_api"))
         self.assertSuccess(resp)
+
+
+class ProblemTagAdminAPITest(APITestCase):
+    def setUp(self):
+        self.user = self.create_super_admin()
+        self.url = self.reverse("problem_tag_admin_api")
+
+    def test_create_problem_tag(self):
+        resp = self.client.post(self.url, data={"name": "DP", "aliases": ["dynamic programming"]})
+        self.assertSuccess(resp)
+        self.assertEqual(resp.data["data"]["name"], "DP")
+        self.assertEqual(resp.data["data"]["normalized_name"], "dp")
+
+    def test_edit_problem_tag(self):
+        tag = ProblemTag.objects.create(name="Graph", normalized_name="graph")
+        resp = self.client.put(self.url, data={"id": tag.id, "name": "Graph Theory", "aliases": ["graph"]})
+        self.assertSuccess(resp)
+        tag.refresh_from_db()
+        self.assertEqual(tag.name, "Graph Theory")
+
+    def test_audit_command_runs(self):
+        ProblemTag.objects.create(name="Greedy", normalized_name="greedy")
+        ProblemTag.objects.create(name="greedy", normalized_name="greedy")
+        call_command("audit_problem_tags")
+
+    def test_merge_problem_tags(self):
+        target_tag = ProblemTag.objects.create(name="Dijkstra", normalized_name="dijkstra", aliases=[])
+        source_tag = ProblemTag.objects.create(name="dijkstra", normalized_name="dijkstra", aliases=[])
+        problem = ProblemCreateTestBase.add_problem(DEFAULT_PROBLEM_DATA, self.user)
+        problem.tags.set([source_tag])
+
+        resp = self.client.post(self.reverse("problem_tag_merge_api"), data={
+            "target_tag_id": target_tag.id,
+            "source_tag_ids": [source_tag.id]
+        })
+        self.assertSuccess(resp)
+        problem.refresh_from_db()
+        self.assertEqual(list(problem.tags.values_list("name", flat=True)), ["Dijkstra"])
+        self.assertFalse(ProblemTag.objects.filter(id=source_tag.id).exists())
 
 
 class TestCaseUploadAPITest(APITestCase):
@@ -136,6 +176,7 @@ class ProblemAdminAPITest(APITestCase):
         self.url = self.reverse("problem_admin_api")
         self.create_super_admin()
         self.data = copy.deepcopy(DEFAULT_PROBLEM_DATA)
+        ProblemTag.objects.create(name="test", normalized_name="test")
 
     def test_create_problem(self):
         resp = self.client.post(self.url, data=self.data)
@@ -198,6 +239,7 @@ class ContestProblemAdminTest(APITestCase):
         self.url = self.reverse("contest_problem_admin_api")
         self.create_admin()
         self.contest = self.client.post(self.reverse("contest_admin_api"), data=DEFAULT_CONTEST_DATA).data["data"]
+        ProblemTag.objects.create(name="test", normalized_name="test")
 
     def test_create_contest_problem(self):
         data = copy.deepcopy(DEFAULT_PROBLEM_DATA)

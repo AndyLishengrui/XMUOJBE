@@ -8,6 +8,7 @@ from utils.constants import Difficulty
 from utils.serializers import LanguageNameMultiChoiceField, SPJLanguageNameChoiceField, LanguageNameChoiceField
 
 from .models import Problem, ProblemRuleType, ProblemTag, ProblemIOMode
+from .tag import clean_tag_aliases, clean_tag_name, normalize_tag_name
 from .utils import parse_problem_template
 
 
@@ -90,9 +91,56 @@ class EditContestProblemSerializer(CreateOrEditProblemSerializer):
 
 
 class TagSerializer(serializers.ModelSerializer):
+    problem_count = serializers.IntegerField(read_only=True)
+
     class Meta:
         model = ProblemTag
-        fields = "__all__"
+        fields = ("id", "name", "normalized_name", "problem_count", "rank")
+
+
+class ProblemTagAdminSerializer(serializers.ModelSerializer):
+    problem_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = ProblemTag
+        fields = ("id", "name", "normalized_name", "aliases", "is_active", "rank", "description", "problem_count")
+
+
+class UpsertProblemTagSerializer(serializers.Serializer):
+    id = serializers.IntegerField(required=False)
+    name = serializers.CharField(max_length=32)
+    aliases = serializers.ListField(child=serializers.CharField(max_length=32), required=False)
+    is_active = serializers.BooleanField(required=False)
+    rank = serializers.IntegerField(required=False)
+    description = serializers.CharField(allow_blank=True, allow_null=True, required=False)
+
+    def validate_name(self, value):
+        value = clean_tag_name(value)
+        if not value:
+            raise serializers.ValidationError("Tag name can not be empty")
+        return value
+
+    def validate_aliases(self, value):
+        return clean_tag_aliases(value)
+
+    def validate(self, attrs):
+        attrs["normalized_name"] = normalize_tag_name(attrs["name"])
+        if not attrs["normalized_name"]:
+            raise serializers.ValidationError("Invalid tag name")
+        attrs["aliases"] = clean_tag_aliases(attrs.get("aliases", []), attrs["name"])
+        return attrs
+
+
+class MergeProblemTagSerializer(serializers.Serializer):
+    target_tag_id = serializers.IntegerField()
+    source_tag_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), allow_empty=False)
+
+    def validate(self, attrs):
+        source_tag_ids = [tag_id for tag_id in attrs["source_tag_ids"] if tag_id != attrs["target_tag_id"]]
+        if not source_tag_ids:
+            raise serializers.ValidationError("At least one different source tag is required")
+        attrs["source_tag_ids"] = list(dict.fromkeys(source_tag_ids))
+        return attrs
 
 
 class CompileSPJSerializer(serializers.Serializer):

@@ -9,9 +9,15 @@ from utils.constants import Choices
 
 class ProblemTag(models.Model):
     name = models.TextField()
+    normalized_name = models.TextField(default="", db_index=True)
+    aliases = JSONField(default=list)
+    is_active = models.BooleanField(default=True)
+    rank = models.IntegerField(default=0)
+    description = models.TextField(null=True, blank=True)
 
     class Meta:
         db_table = "problem_tag"
+        ordering = ("rank", "name", "id")
 
 
 class ProblemRuleType(Choices):

@@ -13,6 +13,7 @@ django.setup()
 from django.conf import settings
 from account.models import User, UserProfile, AdminType, ProblemPermission
 from problem.models import Problem, ProblemTag, ProblemDifficulty, ProblemRuleType
+from problem.tag import normalize_tag_name
 
 admin_type_map = {
     0: AdminType.REGULAR_USER,
@@ -124,7 +125,11 @@ def import_tags():
     print("import tags now? (yes/no)")
     if get_input_result():
         for tagname in tags.values():
-            tag, created = ProblemTag.objects.get_or_create(name=tagname)
+            tag, created = ProblemTag.objects.get_or_create(name=tagname,
+                                                            defaults={"normalized_name": normalize_tag_name(tagname)})
+            if not created and not tag.normalized_name:
+                tag.normalized_name = normalize_tag_name(tag.name)
+                tag.save(update_fields=["normalized_name"])
             if not created:
                 print("%s already exists, omitted" % tagname)
             else:
@@ -175,7 +180,12 @@ def import_problems():
             problem.create_time = data["create_time"]
             problem.save()
             for tag_id in tag_ids:
-                tag, _ = ProblemTag.objects.get_or_create(name=tags[tag_id])
+                tag_name = tags[tag_id]
+                tag, created = ProblemTag.objects.get_or_create(name=tag_name,
+                                                                defaults={"normalized_name": normalize_tag_name(tag_name)})
+                if not created and not tag.normalized_name:
+                    tag.normalized_name = normalize_tag_name(tag.name)
+                    tag.save(update_fields=["normalized_name"])
                 problem.tags.add(tag)
             i += 1
             print("%s imported successfully" % data["title"])
