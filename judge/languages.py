@@ -73,7 +73,7 @@ int main() {
         "max_cpu_time": 10000,
         "max_real_time": 20000,
         "max_memory": 1024 * 1024 * 1024,
-        "compile_command": "/usr/bin/g++ -DONLINE_JUDGE -O2 -w -fmax-errors=3 -std=c++20 {src_path} -lm -o {exe_path}",
+        "compile_command": "/usr/bin/g++ -DONLINE_JUDGE -O2 -w -fmax-errors=3 -std=c++14 {src_path} -lm -o {exe_path}",
     },
     "run": {
         "command": "{exe_path}",
@@ -88,7 +88,7 @@ _cpp_lang_spj_compile = {
     "max_cpu_time": 10000,
     "max_real_time": 20000,
     "max_memory": 1024 * 1024 * 1024,
-    "compile_command": "/usr/bin/g++ -DONLINE_JUDGE -O2 -w -fmax-errors=3 -std=c++20 {src_path} -lm -o {exe_path}"
+    "compile_command": "/usr/bin/g++ -DONLINE_JUDGE -O2 -w -fmax-errors=3 -std=c++14 {src_path} -lm -o {exe_path}"
 }
 
 _cpp_lang_spj_config = {
@@ -135,13 +135,9 @@ _py3_lang_config = {
 //PREPEND END
 
 //TEMPLATE BEGIN
-def add(a, b):
-  # code
-
 //TEMPLATE END
 
 //APPEND BEGIN
-print(add(1, 2))
 //APPEND END""",
     "compile": {
         "src_name": "solution.py",
@@ -152,9 +148,9 @@ print(add(1, 2))
         "compile_command": "/usr/bin/python3 -m py_compile {src_path}",
     },
     "run": {
-        "command": "/usr/bin/python3 -BS {exe_path}",
+        "command": "/usr/bin/python3 {exe_path}",
         "seccomp_rule": "general",
-        "env": default_env
+        "env": default_env + ["PYTHONIOENCODING=utf-8"]
     }
 }
 
@@ -229,7 +225,7 @@ languages = [
     {"config": _cpp_lang_config, "name": "C++", "description": "GCC 13", "content_type": "text/x-c++src",
       "spj": {"compile": _cpp_lang_spj_compile, "config": _cpp_lang_spj_config}},
     {"config": _java_lang_config, "name": "Java", "description": "Temurin 21", "content_type": "text/x-java"},
-    {"config": _py3_lang_config, "name": "Python3", "description": "Python 3.12", "content_type": "text/x-python"},
+    {"config": _py3_lang_config, "name": "Python3", "description": "Python 3", "content_type": "text/x-python"},
     {"config": _go_lang_config, "name": "Golang", "description": "Golang 1.22", "content_type": "text/x-go"},
     {"config": _node_lang_config, "name": "JavaScript", "description": "Node.js 20", "content_type": "text/javascript"},
 ]

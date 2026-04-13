@@ -143,6 +143,13 @@ def merge_problem_tags(target_tag, source_tags):
     return target_tag
 
 
+@transaction.atomic
+def delete_problem_tag(tag):
+    through_model = Problem.tags.through
+    through_model.objects.filter(problemtag_id=tag.id).delete()
+    tag.delete()
+
+
 def serialize_problem_tag_audit(low_frequency_threshold=2):
     tags = list(ProblemTag.objects.annotate(problem_count=Count("problem", distinct=True)).order_by("rank", "name", "id"))
     duplicate_groups = OrderedDict()

@@ -71,7 +71,16 @@ done
 addgroup -g 903 spj
 adduser -u 900 -S -G spj server
 
-chown -R server:spj $DATA $APP/dist
-find $DATA/test_case -type d -exec chmod 710 {} \;
-find $DATA/test_case -type f -exec chmod 640 {} \;
+chown -R server:spj $DATA/log $DATA/config $DATA/ssl $DATA/public $APP/dist
+
+if [ -d "$DATA/test_case" ]; then
+    (
+        echo "[$(date)] start test_case permission sync"
+        find "$DATA/test_case" \( ! -user server -o ! -group spj \) -exec chown server:spj {} \;
+        find "$DATA/test_case" -type d ! -perm 710 -exec chmod 710 {} \;
+        find "$DATA/test_case" -type f ! -perm 640 -exec chmod 640 {} \;
+        echo "[$(date)] finish test_case permission sync"
+    ) >> "$DATA/log/test_case_permissions.log" 2>&1 &
+fi
+
 exec supervisord -c /app/deploy/supervisord.conf

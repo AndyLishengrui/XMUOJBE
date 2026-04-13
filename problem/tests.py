@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import json
 import os
 import shutil
 from datetime import timedelta
@@ -12,11 +13,11 @@ from utils.api.tests import APITestCase
 
 from .models import ProblemTag, ProblemIOMode
 from .models import Problem, ProblemRuleType
-from contest.models import Contest
+from contest.models import Contest, ContestRuleType
 from contest.tests import DEFAULT_CONTEST_DATA
 
 from .views.admin import TestCaseAPI
-from .utils import parse_problem_template
+from .utils import parse_problem_template, PUBLIC_TEST_CASE_DOWNLOAD_KEY
 
 DEFAULT_PROBLEM_DATA = {"_id": "A-110", "title": "test", "description": "<p>test</p>", "input_description": "test",
                         "output_description": "test", "time_limit": 1000, "memory_limit": 256, "difficulty": "Low",
@@ -66,6 +67,36 @@ class ProblemCreateTestBase(APITestCase):
             problem.tags.add(tag)
         return problem
 
+    @staticmethod
+    def ensure_test_case_dir(test_case_id, spj=False, allow_public_download=False):
+        test_case_dir = os.path.join(settings.TEST_CASE_DIR, test_case_id)
+        os.makedirs(test_case_dir, exist_ok=True)
+        input_path = os.path.join(test_case_dir, "1.in")
+        with open(input_path, "w", encoding="utf-8") as input_file:
+            input_file.write("1\n")
+        test_cases = {
+            "1": {
+                "input_name": "1.in",
+                "input_size": os.path.getsize(input_path)
+            }
+        }
+        if not spj:
+            output_path = os.path.join(test_case_dir, "1.out")
+            with open(output_path, "w", encoding="utf-8") as output_file:
+                output_file.write("1\n")
+            test_cases["1"].update({
+                "output_name": "1.out",
+                "output_size": os.path.getsize(output_path),
+                "stripped_output_md5": hashlib.md5(b"1").hexdigest()
+            })
+        with open(os.path.join(test_case_dir, "info"), "w", encoding="utf-8") as info_file:
+            json.dump({
+                "spj": spj,
+                "test_cases": test_cases,
+                PUBLIC_TEST_CASE_DOWNLOAD_KEY: allow_public_download
+            }, info_file, indent=4)
+        return test_case_dir
+
 
 class ProblemTagListAPITest(APITestCase):
     def test_get_tag_list(self):
@@ -92,6 +123,23 @@ class ProblemTagAdminAPITest(APITestCase):
         self.assertSuccess(resp)
         tag.refresh_from_db()
         self.assertEqual(tag.name, "Graph Theory")
+
+    def test_get_single_problem_tag(self):
+        tag = ProblemTag.objects.create(name="Graph", normalized_name="graph", aliases=["图论"])
+        resp = self.client.get(self.url, data={"id": tag.id})
+        self.assertSuccess(resp)
+        self.assertEqual(resp.data["data"]["id"], tag.id)
+        self.assertEqual(resp.data["data"]["name"], tag.name)
+
+    def test_delete_problem_tag(self):
+        tag = ProblemTag.objects.create(name="Graph", normalized_name="graph")
+        problem = ProblemCreateTestBase.add_problem(DEFAULT_PROBLEM_DATA, self.user)
+        problem.tags.set([tag])
+
+        resp = self.client.delete(self.url, data={"id": tag.id})
+        self.assertSuccess(resp)
+        self.assertFalse(ProblemTag.objects.filter(id=tag.id).exists())
+        self.assertEqual(problem.tags.count(), 0)
 
     def test_audit_command_runs(self):
         ProblemTag.objects.create(name="Greedy", normalized_name="greedy")
@@ -177,6 +225,7 @@ class ProblemAdminAPITest(APITestCase):
         self.create_super_admin()
         self.data = copy.deepcopy(DEFAULT_PROBLEM_DATA)
         ProblemTag.objects.create(name="test", normalized_name="test")
+        ProblemCreateTestBase.ensure_test_case_dir(self.data["test_case_id"])
 
     def test_create_problem(self):
         resp = self.client.post(self.url, data=self.data)
@@ -217,11 +266,31 @@ class ProblemAdminAPITest(APITestCase):
         resp = self.client.put(self.url, data=data)
         self.assertSuccess(resp)
 
+    def test_problem_download_flag_round_trip(self):
+        problem_id = self.test_create_problem().data["data"]["id"]
+        get_resp = self.client.get(self.url + "?id=" + str(problem_id))
+        self.assertSuccess(get_resp)
+        self.assertEqual(get_resp.data["data"]["allow_public_test_case_download"], False)
+
+        data = copy.deepcopy(self.data)
+        data["id"] = problem_id
+        data["allow_public_test_case_download"] = True
+        edit_resp = self.client.put(self.url, data=data)
+        self.assertSuccess(edit_resp)
+
+        get_resp = self.client.get(self.url + "?id=" + str(problem_id))
+        self.assertSuccess(get_resp)
+        self.assertEqual(get_resp.data["data"]["allow_public_test_case_download"], True)
+        with open(os.path.join(settings.TEST_CASE_DIR, self.data["test_case_id"], "info"), "r", encoding="utf-8") as info_file:
+            info = json.load(info_file)
+        self.assertEqual(info[PUBLIC_TEST_CASE_DOWNLOAD_KEY], True)
+
 
 class ProblemAPITest(ProblemCreateTestBase):
     def setUp(self):
         self.url = self.reverse("problem_api")
         admin = self.create_admin(login=False)
+        self.ensure_test_case_dir(DEFAULT_PROBLEM_DATA["test_case_id"])
         self.problem = self.add_problem(DEFAULT_PROBLEM_DATA, admin)
         self.create_user("test", "test123")
 
@@ -232,6 +301,54 @@ class ProblemAPITest(ProblemCreateTestBase):
     def get_one_problem(self):
         resp = self.client.get(self.url + "?id=" + self.problem._id)
         self.assertSuccess(resp)
+
+    def test_problem_detail_exposes_download_flag(self):
+        resp = self.client.get(self.url + "?problem_id=" + self.problem._id)
+        self.assertSuccess(resp)
+        self.assertEqual(resp.data["data"]["can_download_test_case"], False)
+
+
+class DownloadTestCaseAPITest(ProblemCreateTestBase):
+    def setUp(self):
+        self.url = self.reverse("dl_test_case_api")
+        admin = self.create_admin(login=False)
+        self.test_case_id = DEFAULT_PROBLEM_DATA["test_case_id"]
+        self.ensure_test_case_dir(self.test_case_id, allow_public_download=True)
+        data = copy.deepcopy(DEFAULT_PROBLEM_DATA)
+        data["test_case_id"] = self.test_case_id
+        self.problem = self.add_problem(data, admin)
+
+    def test_public_problem_can_download_test_case(self):
+        resp = self.client.get(self.url + f"?problem_id={self.problem.id}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("attachment; filename=problem_", resp["Content-Disposition"])
+
+    def test_problem_download_disabled_returns_error(self):
+        self.ensure_test_case_dir(self.test_case_id, allow_public_download=False)
+        resp = self.client.get(self.url + f"?problem_id={self.problem.id}")
+        self.assertFailed(resp, "Problem does not support download")
+
+    def test_contest_problem_requires_contest_access(self):
+        contest_data = copy.deepcopy(DEFAULT_CONTEST_DATA)
+        contest_data["password"] = ""
+        contest_data["start_time"] = contest_data["start_time"] + timedelta(hours=1)
+        contest = Contest.objects.create(**{
+            "title": contest_data["title"],
+            "description": contest_data["description"],
+            "real_time_rank": contest_data["real_time_rank"],
+            "password": contest_data["password"],
+            "rule_type": contest_data["rule_type"],
+            "start_time": contest_data["start_time"],
+            "end_time": contest_data["end_time"],
+            "created_by": self.problem.created_by,
+            "visible": contest_data["visible"],
+            "allowed_ip_ranges": contest_data["allowed_ip_ranges"]
+        })
+        self.problem.contest = contest
+        self.problem.save()
+        self.client.logout()
+        resp = self.client.get(self.url + f"?problem_id={self.problem.id}")
+        self.assertFailed(resp, "Please login first.")
 
 
 class ContestProblemAdminTest(APITestCase):
@@ -266,6 +383,7 @@ class ContestProblemAdminTest(APITestCase):
 class ContestProblemTest(ProblemCreateTestBase):
     def setUp(self):
         admin = self.create_admin()
+        self.ensure_test_case_dir(DEFAULT_PROBLEM_DATA["test_case_id"], allow_public_download=True)
         url = self.reverse("contest_admin_api")
         contest_data = copy.deepcopy(DEFAULT_CONTEST_DATA)
         contest_data["password"] = ""
@@ -301,10 +419,25 @@ class ContestProblemTest(ProblemCreateTestBase):
         resp = self.client.get(self.url + "?contest_id=" + str(self.contest["id"]))
         self.assertSuccess(resp)
 
+    def test_contest_problem_detail_returns_download_flag_in_safe_branch(self):
+        contest = Contest.objects.get(id=self.contest["id"])
+        contest.rule_type = ContestRuleType.OI
+        contest.real_time_rank = False
+        contest.start_time = contest.start_time - timedelta(hours=2)
+        contest.save()
+        self.problem.rule_type = ProblemRuleType.OI
+        self.problem.save()
+
+        self.create_user("test_user", "test123")
+        resp = self.client.get(f"{self.url}?contest_id={contest.id}&problem_id={self.problem._id}")
+        self.assertSuccess(resp)
+        self.assertEqual(resp.data["data"]["can_download_test_case"], True)
+
 
 class AddProblemFromPublicProblemAPITest(ProblemCreateTestBase):
     def setUp(self):
         admin = self.create_admin()
+        self.ensure_test_case_dir(DEFAULT_PROBLEM_DATA["test_case_id"], allow_public_download=True)
         url = self.reverse("contest_admin_api")
         contest_data = copy.deepcopy(DEFAULT_CONTEST_DATA)
         contest_data["password"] = ""
@@ -323,6 +456,28 @@ class AddProblemFromPublicProblemAPITest(ProblemCreateTestBase):
         self.assertSuccess(resp)
         self.assertTrue(Problem.objects.all().exists())
         self.assertTrue(Problem.objects.filter(contest_id=self.contest["id"]).exists())
+
+    def test_add_contest_problem_copies_test_case_independently(self):
+        resp = self.client.post(self.url, data=self.data)
+        self.assertSuccess(resp)
+        contest_problem = Problem.objects.get(contest_id=self.contest["id"], _id=self.data["display_id"])
+        self.assertNotEqual(contest_problem.test_case_id, self.problem.test_case_id)
+
+        contest_admin_url = self.reverse("contest_problem_admin_api")
+        get_resp = self.client.get(f"{contest_admin_url}?contest_id={self.contest['id']}&id={contest_problem.id}")
+        self.assertSuccess(get_resp)
+        edit_data = get_resp.data["data"]
+        edit_data["contest_id"] = self.contest["id"]
+        edit_data["allow_public_test_case_download"] = False
+        edit_resp = self.client.put(contest_admin_url, data=edit_data)
+        self.assertSuccess(edit_resp)
+
+        with open(os.path.join(settings.TEST_CASE_DIR, self.problem.test_case_id, "info"), "r", encoding="utf-8") as info_file:
+            public_info = json.load(info_file)
+        with open(os.path.join(settings.TEST_CASE_DIR, contest_problem.test_case_id, "info"), "r", encoding="utf-8") as info_file:
+            contest_info = json.load(info_file)
+        self.assertEqual(public_info[PUBLIC_TEST_CASE_DOWNLOAD_KEY], True)
+        self.assertEqual(contest_info[PUBLIC_TEST_CASE_DOWNLOAD_KEY], False)
 
 
 class ParseProblemTemplateTest(APITestCase):

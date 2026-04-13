@@ -30,8 +30,12 @@ from ..serializers import (CreateContestProblemSerializer, CompileSPJSerializer,
                FPSProblemSerializer, ProblemTagAdminSerializer, UpsertProblemTagSerializer,
                MergeProblemTagSerializer)
 from ..tag import (assign_problem_tags, clean_tag_aliases, clean_tag_name,
-           normalize_problem_tag_instance, serialize_problem_tag_audit, merge_problem_tags)
-from ..utils import TEMPLATE_BASE, build_problem_template
+           normalize_problem_tag_instance, serialize_problem_tag_audit, merge_problem_tags,
+           delete_problem_tag)
+from ..utils import (TEMPLATE_BASE, build_problem_template,
+                     clone_test_case,
+                     is_problem_public_test_case_download_enabled,
+                     set_public_test_case_download_flag)
 
 
 class TestCaseZipProcessor(object):
@@ -60,7 +64,7 @@ class TestCaseZipProcessor(object):
                 if item.endswith(".out"):
                     md5_cache[item] = hashlib.md5(content.rstrip()).hexdigest()
                 f.write(content)
-        test_case_info = {"spj": spj, "test_cases": {}}
+        test_case_info = {"spj": spj, "test_cases": {}, "allow_public_test_case_download": False}
 
         info = []
 
@@ -178,6 +182,14 @@ class CompileSPJAPI(APIView):
 class ProblemTagAdminAPI(APIView):
     @problem_permission_required
     def get(self, request):
+        tag_id = request.GET.get("id")
+        if tag_id is not None:
+            try:
+                tag = ProblemTag.objects.annotate(problem_count=Count("problem", distinct=True)).get(id=tag_id)
+            except ProblemTag.DoesNotExist:
+                return self.error("Tag does not exist")
+            return self.success(ProblemTagAdminSerializer(tag).data)
+
         keyword = request.GET.get("keyword")
         include_inactive = request.GET.get("include_inactive") == "true"
         only_used = request.GET.get("only_used") == "true"
@@ -255,6 +267,18 @@ class ProblemTagAdminAPI(APIView):
         tag = ProblemTag.objects.annotate(problem_count=Count("problem", distinct=True)).get(id=tag.id)
         return self.success(ProblemTagAdminSerializer(tag).data)
 
+    @problem_permission_required
+    def delete(self, request):
+        tag_id = request.GET.get("id")
+        if not tag_id:
+            return self.error("Tag id is required")
+        try:
+            tag = ProblemTag.objects.get(id=tag_id)
+        except ProblemTag.DoesNotExist:
+            return self.error("Tag does not exist")
+        delete_problem_tag(tag)
+        return self.success()
+
 
 class ProblemTagAuditAPI(APIView):
     @problem_permission_required
@@ -314,12 +338,39 @@ class ProblemBase(APIView):
     def sync_tags(self, problem, tags):
         assign_problem_tags(problem, tags, allow_create=False)
 
+    def ensure_independent_test_case(self, problem):
+        shared = Problem.objects.filter(test_case_id=problem.test_case_id).exclude(id=problem.id).exists()
+        if not shared:
+            return
+        try:
+            new_test_case_id = clone_test_case(problem.test_case_id)
+        except FileNotFoundError:
+            raise APIError("Test case does not exists")
+        problem.test_case_id = new_test_case_id
+        problem.save(update_fields=["test_case_id"])
+
+    def pop_public_test_case_download_flag(self, data):
+        return bool(data.pop("allow_public_test_case_download", False))
+
+    def sync_public_test_case_download_flag(self, problem, enabled):
+        self.ensure_independent_test_case(problem)
+        try:
+            set_public_test_case_download_flag(problem.test_case_id, enabled)
+        except FileNotFoundError:
+            raise APIError("Test case does not exists")
+
+    def serialize_problem_admin_data(self, problem):
+        data = ProblemAdminSerializer(problem).data
+        data["allow_public_test_case_download"] = is_problem_public_test_case_download_enabled(problem)
+        return data
+
 
 class ProblemAPI(ProblemBase):
     @problem_permission_required
     @validate_serializer(CreateProblemSerializer)
     def post(self, request):
         data = request.data
+        allow_public_test_case_download = self.pop_public_test_case_download_flag(data)
         _id = data["_id"]
         if not _id:
             return self.error("Display ID is required")
@@ -335,11 +386,12 @@ class ProblemAPI(ProblemBase):
         data["created_by"] = request.user
         problem = Problem.objects.create(**data)
         try:
+            self.sync_public_test_case_download_flag(problem, allow_public_test_case_download)
             self.sync_tags(problem, tags)
         except APIError as error:
             problem.delete()
             return self.error(error.msg, error.err)
-        return self.success(ProblemAdminSerializer(problem).data)
+        return self.success(self.serialize_problem_admin_data(problem))
 
     @problem_permission_required
     def get(self, request):
@@ -350,7 +402,7 @@ class ProblemAPI(ProblemBase):
             try:
                 problem = Problem.objects.get(id=problem_id)
                 ensure_created_by(problem, request.user)
-                return self.success(ProblemAdminSerializer(problem).data)
+                return self.success(self.serialize_problem_admin_data(problem))
             except Problem.DoesNotExist:
                 return self.error("Problem does not exist")
 
@@ -372,6 +424,7 @@ class ProblemAPI(ProblemBase):
     @validate_serializer(EditProblemSerializer)
     def put(self, request):
         data = request.data
+        allow_public_test_case_download = self.pop_public_test_case_download_flag(data)
         problem_id = data.pop("id")
 
         try:
@@ -397,6 +450,7 @@ class ProblemAPI(ProblemBase):
             setattr(problem, k, v)
         problem.save()
         try:
+            self.sync_public_test_case_download_flag(problem, allow_public_test_case_download)
             self.sync_tags(problem, tags)
         except APIError as error:
             return self.error(error.msg, error.err)
@@ -424,6 +478,7 @@ class ContestProblemAPI(ProblemBase):
     @validate_serializer(CreateContestProblemSerializer)
     def post(self, request):
         data = request.data
+        allow_public_test_case_download = self.pop_public_test_case_download_flag(data)
         try:
             contest = Contest.objects.get(id=data.pop("contest_id"))
             ensure_created_by(contest, request.user)
@@ -450,11 +505,12 @@ class ContestProblemAPI(ProblemBase):
         data["created_by"] = request.user
         problem = Problem.objects.create(**data)
         try:
+            self.sync_public_test_case_download_flag(problem, allow_public_test_case_download)
             self.sync_tags(problem, tags)
         except APIError as error:
             problem.delete()
             return self.error(error.msg, error.err)
-        return self.success(ProblemAdminSerializer(problem).data)
+        return self.success(self.serialize_problem_admin_data(problem))
 
     def get(self, request):
         problem_id = request.GET.get("id")
@@ -466,7 +522,7 @@ class ContestProblemAPI(ProblemBase):
                 ensure_created_by(problem.contest, user)
             except Problem.DoesNotExist:
                 return self.error("Problem does not exist")
-            return self.success(ProblemAdminSerializer(problem).data)
+            return self.success(self.serialize_problem_admin_data(problem))
 
         if not contest_id:
             return self.error("Contest id is required")
@@ -487,6 +543,7 @@ class ContestProblemAPI(ProblemBase):
     def put(self, request):
         data = request.data
         user = request.user
+        allow_public_test_case_download = self.pop_public_test_case_download_flag(data)
 
         try:
             contest = Contest.objects.get(id=data.pop("contest_id"))
@@ -521,6 +578,7 @@ class ContestProblemAPI(ProblemBase):
             setattr(problem, k, v)
         problem.save()
         try:
+            self.sync_public_test_case_download_flag(problem, allow_public_test_case_download)
             self.sync_tags(problem, tags)
         except APIError as error:
             return self.error(error.msg, error.err)
@@ -567,6 +625,10 @@ class MakeContestProblemPublicAPIView(APIView):
         problem.pk = None
         problem.contest = None
         problem._id = display_id
+        try:
+            problem.test_case_id = clone_test_case(problem.test_case_id)
+        except FileNotFoundError:
+            return self.error("Test case does not exists")
         problem.visible = False
         problem.submission_number = problem.accepted_number = 0
         problem.statistic_info = {}
@@ -594,6 +656,10 @@ class AddContestProblemAPI(APIView):
         problem.pk = None
         problem.contest = contest
         problem.is_public = True
+        try:
+            problem.test_case_id = clone_test_case(problem.test_case_id)
+        except FileNotFoundError:
+            return self.error("Test case does not exists")
         problem.visible = True
         problem._id = request.data["display_id"]
         problem.submission_number = problem.accepted_number = 0
@@ -730,6 +796,13 @@ class ImportProblemAPI(CSRFExemptAPIView, TestCaseZipProcessor):
                             assign_problem_tags(problem_obj, problem_info["tags"], allow_create=False)
                         except APIError as error:
                             return self.error(error.msg, error.err)
+                        try:
+                            set_public_test_case_download_flag(
+                                problem_obj.test_case_id,
+                                problem_info.get("allow_public_test_case_download", False)
+                            )
+                        except FileNotFoundError:
+                            return self.error("Test case does not exists")
         return self.success({"import_count": count})
 
 
@@ -754,28 +827,29 @@ class FPSProblemImport(CSRFExemptAPIView):
                 our_lang = "Python3"
             template[our_lang] = TEMPLATE_BASE.format(prepend.get(lang, ""), t["code"], append.get(lang, ""))
         spj = problem_data["spj"] is not None
-        Problem.objects.create(_id=f"fps-{rand_str(4)}",
-                               title=problem_data["title"],
-                               description=problem_data["description"],
-                               input_description=problem_data["input"],
-                               output_description=problem_data["output"],
-                               hint=problem_data["hint"],
-                               test_case_score=problem_data["test_case_score"],
-                               time_limit=time_limit,
-                               memory_limit=problem_data["memory_limit"]["value"],
-                               samples=problem_data["samples"],
-                               template=template,
-                               rule_type=ProblemRuleType.ACM,
-                               source=problem_data.get("source", ""),
-                               spj=spj,
-                               spj_code=problem_data["spj"]["code"] if spj else None,
-                               spj_language=problem_data["spj"]["language"] if spj else None,
-                               spj_version=rand_str(8) if spj else "",
-                               visible=False,
-                               languages=SysOptions.language_names,
-                               created_by=creator,
-                               difficulty=Difficulty.MID,
-                               test_case_id=problem_data["test_case_id"])
+        problem = Problem.objects.create(_id=f"fps-{rand_str(4)}",
+                         title=problem_data["title"],
+                         description=problem_data["description"],
+                         input_description=problem_data["input"],
+                         output_description=problem_data["output"],
+                         hint=problem_data["hint"],
+                         test_case_score=problem_data["test_case_score"],
+                         time_limit=time_limit,
+                         memory_limit=problem_data["memory_limit"]["value"],
+                         samples=problem_data["samples"],
+                         template=template,
+                         rule_type=ProblemRuleType.ACM,
+                         source=problem_data.get("source", ""),
+                         spj=spj,
+                         spj_code=problem_data["spj"]["code"] if spj else None,
+                         spj_language=problem_data["spj"]["language"] if spj else None,
+                         spj_version=rand_str(8) if spj else "",
+                         visible=False,
+                         languages=SysOptions.language_names,
+                         created_by=creator,
+                         difficulty=Difficulty.MID,
+                         test_case_id=problem_data["test_case_id"])
+        set_public_test_case_download_flag(problem.test_case_id, False)
 
     def post(self, request):
         form = UploadProblemForm(request.POST, request.FILES)

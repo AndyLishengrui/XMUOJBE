@@ -9,7 +9,7 @@ from utils.serializers import LanguageNameMultiChoiceField, SPJLanguageNameChoic
 
 from .models import Problem, ProblemRuleType, ProblemTag, ProblemIOMode
 from .tag import clean_tag_aliases, clean_tag_name, normalize_tag_name
-from .utils import parse_problem_template
+from .utils import parse_problem_template, is_problem_public_test_case_download_enabled
 
 
 class TestCaseUploadForm(forms.Form):
@@ -71,6 +71,7 @@ class CreateOrEditProblemSerializer(serializers.Serializer):
     hint = serializers.CharField(allow_blank=True, allow_null=True)
     source = serializers.CharField(max_length=256, allow_blank=True, allow_null=True)
     share_submission = serializers.BooleanField()
+    allow_public_test_case_download = serializers.BooleanField(required=False, default=False)
 
 
 class CreateProblemSerializer(CreateOrEditProblemSerializer):
@@ -199,6 +200,7 @@ class ExportProblemSerializer(serializers.ModelSerializer):
     spj = serializers.SerializerMethodField()
     template = serializers.SerializerMethodField()
     source = serializers.SerializerMethodField()
+    allow_public_test_case_download = serializers.SerializerMethodField()
     tags = serializers.SlugRelatedField(many=True, slug_field="name", read_only=True)
 
     def get_display_id(self, obj):
@@ -237,12 +239,15 @@ class ExportProblemSerializer(serializers.ModelSerializer):
     def get_source(self, obj):
         return obj.source or f"{SysOptions.website_name} {SysOptions.website_base_url}"
 
+    def get_allow_public_test_case_download(self, obj):
+        return is_problem_public_test_case_download_enabled(obj)
+
     class Meta:
         model = Problem
         fields = ("display_id", "title", "description", "tags",
                   "input_description", "output_description",
                   "test_case_score", "hint", "time_limit", "memory_limit", "samples",
-                  "template", "spj", "rule_type", "source", "template")
+                  "template", "spj", "rule_type", "source", "allow_public_test_case_download", "template")
 
 
 class AddContestProblemSerializer(serializers.Serializer):
@@ -301,6 +306,7 @@ class ImportProblemSerializer(serializers.Serializer):
     spj = SPJSerializer(allow_null=True)
     rule_type = serializers.ChoiceField(choices=ProblemRuleType.choices())
     source = serializers.CharField(max_length=200, allow_blank=True, allow_null=True)
+    allow_public_test_case_download = serializers.BooleanField(required=False, default=False)
     answers = serializers.ListField(child=AnswerSerializer())
     tags = serializers.ListField(child=serializers.CharField())
 

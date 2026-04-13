@@ -1,11 +1,11 @@
 import random
 from django.db.models import Q
 from utils.api import APIView
-from account.decorators import check_contest_permission
+from account.decorators import check_contest_permission, check_contest_password
 from ..models import Problem, ProblemRuleType
 from ..serializers import ProblemSerializer, TagSerializer, ProblemSafeSerializer
 from ..tag import get_problem_tag_queryset, normalize_tag_name
-from contest.models import ContestRuleType
+from contest.models import ContestRuleType, ContestStatus, ContestType
 
 import hashlib
 import json
@@ -18,6 +18,9 @@ from django.conf import settings
 from utils.shortcuts import rand_str, natural_sort_key
 from django.http import StreamingHttpResponse, FileResponse
 from utils.api import APIError
+from utils.constants import CONTEST_PASSWORD_SESSION_KEY
+
+from ..utils import is_problem_public_test_case_download_enabled
 
 class ProblemTagAPI(APIView):
     def get(self, request):
@@ -62,6 +65,7 @@ class ProblemAPI(APIView):
                 problem = Problem.objects.select_related("created_by") \
                     .get(_id=problem_id, contest_id__isnull=True, visible=True)
                 problem_data = ProblemSerializer(problem).data
+                problem_data["can_download_test_case"] = is_problem_public_test_case_download_enabled(problem)
                 self._add_problem_status(request, problem_data)
                 return self.success(problem_data)
             except Problem.DoesNotExist:
@@ -120,6 +124,7 @@ class ContestProblemAPI(APIView):
                 self._add_problem_status(request, [problem_data, ])
             else:
                 problem_data = ProblemSafeSerializer(problem).data
+            problem_data["can_download_test_case"] = is_problem_public_test_case_download_enabled(problem)
             return self.success(problem_data)
 
         contest_problems = Problem.objects.select_related("created_by").filter(contest=self.contest, visible=True)
@@ -128,6 +133,8 @@ class ContestProblemAPI(APIView):
             self._add_problem_status(request, data)
         else:
             data = ProblemSafeSerializer(contest_problems, many=True).data
+        for index, problem in enumerate(contest_problems):
+            data[index]["can_download_test_case"] = is_problem_public_test_case_download_enabled(problem)
         return self.success(data)
 
 
@@ -157,7 +164,7 @@ class DLTestCaseZipProcessor(object):
                 if item.endswith(".out"):
                     md5_cache[item] = hashlib.md5(content.rstrip()).hexdigest()
                 f.write(content)
-        test_case_info = {"spj": spj, "test_cases": {}}
+        test_case_info = {"spj": spj, "test_cases": {}, "allow_public_test_case_download": False}
 
         info = []
 
@@ -214,21 +221,40 @@ class DLTestCaseZipProcessor(object):
 class DLTestCaseAPI(APIView, DLTestCaseZipProcessor):
     request_parsers = ()
 
+    def _can_access_problem(self, request, problem):
+        if not problem.visible:
+            return False, "Problem does not exists"
+        if not problem.contest:
+            return True, None
+
+        contest = problem.contest
+        user = request.user
+        if not user.is_authenticated:
+            return False, "Please login first."
+        if user.is_contest_admin(contest):
+            return True, None
+        if contest.contest_type == ContestType.PASSWORD_PROTECTED_CONTEST:
+            contest_password = request.session.get(CONTEST_PASSWORD_SESSION_KEY, {}).get(contest.id)
+            if not check_contest_password(contest_password, contest.password):
+                return False, "Wrong password or password expired"
+        if contest.status == ContestStatus.CONTEST_NOT_START:
+            return False, "Contest has not started yet."
+        return True, None
+
     def get(self, request):
         problem_id = request.GET.get("problem_id")
         if not problem_id:
             return self.error("Parameter error, problem_id is required")
         try:
-            problem = Problem.objects.get(id=problem_id)
-            if problem.source != 'xmu':
-                return self.error("Problem does not support download")
+            problem = Problem.objects.select_related("contest").get(id=problem_id)
         except Problem.DoesNotExist:
             return self.error("Problem does not exists")
 
-        #if problem.contest:
-        #    ensure_created_by(problem.contest, request.user)
-        #else:
-        #    ensure_created_by(problem, request.user)
+        has_access, error_message = self._can_access_problem(request, problem)
+        if not has_access:
+            return self.error(error_message)
+        if not is_problem_public_test_case_download_enabled(problem):
+            return self.error("Problem does not support download")
 
         test_case_dir = os.path.join(settings.TEST_CASE_DIR, problem.test_case_id)
         if not os.path.isdir(test_case_dir):
