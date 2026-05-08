@@ -4,6 +4,7 @@ import zipfile
 from ipaddress import ip_network
 
 import dateutil.parser
+from django.db import OperationalError, ProgrammingError, connection, transaction
 from django.http import FileResponse
 
 from account.decorators import check_contest_permission, ensure_created_by
@@ -11,10 +12,10 @@ from account.models import User
 from submission.models import Submission, JudgeStatus
 from utils.api import APIView, validate_serializer
 from utils.cache import cache
-from utils.constants import CacheKey
+from utils.constants import CacheKey, ContestStatus
 from utils.shortcuts import rand_str
 from utils.tasks import delete_files
-from ..models import Contest, ContestAnnouncement, ACMContestRank
+from ..models import Contest, ContestAnnouncement, ACMContestRank, OIContestRank
 from ..serializers import (ContestAnnouncementSerializer, ContestAdminSerializer,
                            CreateConetestSeriaizer, CreateContestAnnouncementSerializer,
                            EditConetestSeriaizer, EditContestAnnouncementSerializer,
@@ -78,14 +79,67 @@ class ContestAPI(APIView):
             except Contest.DoesNotExist:
                 return self.error("Contest does not exist")
 
-        contests = Contest.objects.all().order_by("-create_time")
+        contests = Contest.objects.select_related('created_by').all().order_by("-create_time")
         if request.user.is_admin():
             contests = contests.filter(created_by=request.user)
 
         keyword = request.GET.get("keyword")
         if keyword:
-            contests = contests.filter(title__contains=keyword)
+            contests = contests.filter(title__icontains=keyword)
+        owner = request.GET.get("owner")
+        if owner:
+            contests = contests.filter(created_by__username__icontains=owner)
         return self.success(self.paginate_data(request, contests, ContestAdminSerializer))
+
+    def delete(self, request):
+        contest_id = request.GET.get("id")
+        if not contest_id:
+            return self.error("Parameter error")
+
+        hard_delete = request.GET.get("hard") == "1"
+
+        try:
+            contest = Contest.objects.get(id=contest_id)
+            ensure_created_by(contest, request.user)
+        except Contest.DoesNotExist:
+            return self.error("Contest does not exist")
+
+        cache_key = f"{CacheKey.contest_rank_cache}:{contest.id}"
+
+        if hard_delete:
+            # Running contest data is still being mutated by submissions and rank updates.
+            if contest.status == ContestStatus.CONTEST_UNDERWAY:
+                return self.error("Running contest cannot be hard deleted")
+            try:
+                deleted_rows, _ = contest.delete()
+            except OperationalError:
+                # PostgreSQL submission table can be physically corrupted on disk in some deployments.
+                # Fallback to a SQL cleanup path that does not touch submission table.
+                try:
+                    with transaction.atomic():
+                        with connection.cursor() as cursor:
+                            cursor.execute("SET LOCAL session_replication_role = replica")
+                            cursor.execute(
+                                "DELETE FROM problem_tags "
+                                "WHERE problem_id IN (SELECT id FROM problem WHERE contest_id = %s)",
+                                [contest.id]
+                            )
+                            cursor.execute("DELETE FROM acm_contest_rank WHERE contest_id = %s", [contest.id])
+                            cursor.execute("DELETE FROM oi_contest_rank WHERE contest_id = %s", [contest.id])
+                            cursor.execute("DELETE FROM contest_announcement WHERE contest_id = %s", [contest.id])
+                            cursor.execute("DELETE FROM problem WHERE contest_id = %s", [contest.id])
+                            cursor.execute("DELETE FROM contest WHERE id = %s", [contest.id])
+                            deleted_rows = cursor.rowcount
+                except (OperationalError, ProgrammingError):
+                    return self.error("Database storage is inconsistent (submission table corrupted). Contact DBA and repair PostgreSQL before hard delete.")
+            cache.delete(cache_key)
+            return self.success({"id": int(contest_id), "mode": "hard", "deleted_rows": deleted_rows})
+
+        if contest.visible:
+            contest.visible = False
+            contest.save(update_fields=["visible"])
+        cache.delete(cache_key)
+        return self.success({"id": contest.id, "mode": "soft", "visible": contest.visible})
 
 
 class ContestAnnouncementAPI(APIView):

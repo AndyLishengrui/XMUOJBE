@@ -4,6 +4,8 @@ from datetime import datetime, timedelta
 from django.utils import timezone
 
 from utils.api.tests import APITestCase
+from problem.models import Problem
+from submission.models import Submission, JudgeStatus
 
 from .models import ContestAnnouncement, ContestRuleType, Contest
 
@@ -53,10 +55,172 @@ class ContestAdminAPITest(APITestCase):
         response = self.client.get(self.url)
         self.assertSuccess(response)
 
+    def test_admin_only_sees_own_contests(self):
+        self.client.logout()
+        admin_a = self.create_admin("admin_a", "admin_a_123")
+        self.client.logout()
+        admin_b = self.create_admin("admin_b", "admin_b_123")
+
+        Contest.objects.create(created_by=admin_a, **copy.deepcopy(DEFAULT_CONTEST_DATA))
+        Contest.objects.create(created_by=admin_b, **copy.deepcopy(DEFAULT_CONTEST_DATA))
+
+        self.client.logout()
+        self.client.login(username="admin_a", password="admin_a_123")
+        response = self.client.get(self.url)
+        self.assertSuccess(response)
+        results = response.data["data"]["results"]
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["created_by"]["username"], "admin_a")
+
+    def test_super_admin_sees_all_contests(self):
+        self.client.logout()
+        admin_a = self.create_admin("admin_sa_a", "admin_sa_a_123")
+        self.client.logout()
+        admin_b = self.create_admin("admin_sa_b", "admin_sa_b_123")
+
+        Contest.objects.create(created_by=admin_a, **copy.deepcopy(DEFAULT_CONTEST_DATA))
+        Contest.objects.create(created_by=admin_b, **copy.deepcopy(DEFAULT_CONTEST_DATA))
+
+        self.client.logout()
+        self.client.login(username="root", password="root")
+        response = self.client.get(self.url)
+        self.assertSuccess(response)
+        results = response.data["data"]["results"]
+        self.assertEqual(len(results), 2)
+
+    def test_search_contests_by_title_and_owner_independently(self):
+        self.client.logout()
+        owner = self.create_admin("andy_owner_search", "owner_search_123")
+        Contest.objects.create(
+            created_by=owner,
+            **dict(copy.deepcopy(DEFAULT_CONTEST_DATA), title="Graph Lab Search")
+        )
+
+        self.client.logout()
+        self.client.login(username="root", password="root")
+
+        # Search by title keyword only
+        resp_title = self.client.get(self.url + "?keyword=Graph")
+        self.assertSuccess(resp_title)
+        self.assertEqual(resp_title.data["data"]["total"], 1)
+
+        # Search by owner only
+        resp_owner = self.client.get(self.url + "?owner=Andy")
+        self.assertSuccess(resp_owner)
+        self.assertEqual(resp_owner.data["data"]["total"], 1)
+
+        # Combined: both filters must match
+        resp_both = self.client.get(self.url + "?keyword=Graph&owner=Andy")
+        self.assertSuccess(resp_both)
+        self.assertEqual(resp_both.data["data"]["total"], 1)
+
+        # Combined: title matches but owner doesn't
+        resp_mismatch = self.client.get(self.url + "?keyword=Graph&owner=nonexistent")
+        self.assertSuccess(resp_mismatch)
+        self.assertEqual(resp_mismatch.data["data"]["total"], 0)
+
     def test_get_one_contest(self):
         id = self.test_create_contest().data["data"]["id"]
         response = self.client.get("{}?id={}".format(self.url, id))
         self.assertSuccess(response)
+
+    def test_soft_delete_contest(self):
+        id = self.test_create_contest().data["data"]["id"]
+        response = self.client.delete("{}?id={}".format(self.url, id))
+        self.assertSuccess(response)
+        contest = Contest.objects.get(id=id)
+        self.assertFalse(contest.visible)
+
+    def test_hard_delete_contest(self):
+        id = self.test_create_contest().data["data"]["id"]
+        contest = Contest.objects.get(id=id)
+        contest.start_time = timezone.localtime(timezone.now()) - timedelta(days=2)
+        contest.end_time = timezone.localtime(timezone.now()) - timedelta(days=1)
+        contest.save(update_fields=["start_time", "end_time"])
+        response = self.client.delete("{}?id={}&hard=1".format(self.url, id))
+        self.assertSuccess(response)
+        self.assertFalse(Contest.objects.filter(id=id).exists())
+
+    def test_hard_delete_running_contest(self):
+        id = self.test_create_contest().data["data"]["id"]
+        response = self.client.delete("{}?id={}&hard=1".format(self.url, id))
+        self.assertFailed(response, "Running contest cannot be hard deleted")
+        self.assertTrue(Contest.objects.filter(id=id).exists())
+
+    def _create_problem(self, owner, contest=None, display_id="A-100"):
+        return Problem.objects.create(
+            _id=display_id,
+            contest=contest,
+            title="test",
+            description="<p>test</p>",
+            input_description="in",
+            output_description="out",
+            samples=[{"input": "1", "output": "1"}],
+            test_case_id="dummy-test-case",
+            test_case_score=[{"input_name": "1.in", "output_name": "1.out", "score": 0}],
+            languages=["C", "C++", "Python3"],
+            template={},
+            created_by=owner,
+            time_limit=1000,
+            memory_limit=256,
+            spj=False,
+            rule_type="ACM",
+            difficulty="Low",
+        )
+
+    def test_hard_delete_contest_cascade_contest_data_only(self):
+        owner = self.create_admin("owner", "owner123")
+        self.client.logout()
+        self.client.login(username="root", password="root")
+
+        contest = Contest.objects.create(created_by=owner, **copy.deepcopy(DEFAULT_CONTEST_DATA))
+        contest.start_time = timezone.localtime(timezone.now()) - timedelta(days=2)
+        contest.end_time = timezone.localtime(timezone.now()) - timedelta(days=1)
+        contest.save(update_fields=["start_time", "end_time"])
+
+        contest_problem = self._create_problem(owner=owner, contest=contest, display_id="A-101")
+        public_problem = self._create_problem(owner=owner, contest=None, display_id="P-101")
+
+        Submission.objects.create(
+            contest=contest,
+            problem=contest_problem,
+            user_id=owner.id,
+            username=owner.username,
+            code="print(1)",
+            result=JudgeStatus.ACCEPTED,
+            language="Python3",
+        )
+        Submission.objects.create(
+            contest=None,
+            problem=public_problem,
+            user_id=owner.id,
+            username=owner.username,
+            code="print(2)",
+            result=JudgeStatus.ACCEPTED,
+            language="Python3",
+        )
+
+        response = self.client.delete("{}?id={}&hard=1".format(self.url, contest.id))
+        self.assertSuccess(response)
+
+        self.assertFalse(Contest.objects.filter(id=contest.id).exists())
+        self.assertFalse(Problem.objects.filter(id=contest_problem.id).exists())
+        self.assertFalse(Submission.objects.filter(problem_id=contest_problem.id).exists())
+
+        self.assertTrue(Problem.objects.filter(id=public_problem.id).exists())
+        self.assertTrue(Submission.objects.filter(problem_id=public_problem.id).exists())
+
+    def test_admin_cannot_delete_other_admin_contest(self):
+        self.client.logout()
+        owner = self.create_admin("contest_owner", "owner123")
+        contest = Contest.objects.create(created_by=owner, **copy.deepcopy(DEFAULT_CONTEST_DATA))
+
+        self.client.logout()
+        self.create_admin("other_admin", "other123")
+
+        response = self.client.delete("{}?id={}".format(self.url, contest.id))
+        self.assertFailed(response, "Contest does not exist")
+        self.assertTrue(Contest.objects.filter(id=contest.id).exists())
 
 
 class ContestAPITest(APITestCase):
