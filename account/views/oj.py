@@ -520,7 +520,7 @@ class UserContestSummaryAPI(APIView):
             "contest_id", "submission_number", "accepted_number", "total_time"
         ))
         oi_ranks = list(OIContestRank.objects.filter(user=target_user).values(
-            "contest_id", "submission_number", "total_score"
+            "contest_id", "submission_number", "total_score", "submission_info"
         ))
 
         # Some historical data only exists in submission table (without rank/participation).
@@ -609,8 +609,18 @@ class UserContestSummaryAPI(APIView):
                         total_score=rank_data["total_score"]
                     )
                     item["my_rank"] = self._oi_rank_position(contest, rank)
-                    item["submission_count"] = rank_data["submission_number"]
-                    item["total_score"] = rank_data["total_score"]
+                    item["total_score"] = max(item["total_score"], rank_data["total_score"])
+                    # OI rank submission_number is often 0 in historical data;
+                    # prefer the Submission-table count already set, or fall back
+                    # to the number of problems attempted (from submission_info).
+                    oi_sub_count = rank_data["submission_number"] or 0
+                    if oi_sub_count == 0 and rank_data.get("submission_info"):
+                        oi_sub_count = len(rank_data["submission_info"])
+                    item["submission_count"] = max(item["submission_count"], oi_sub_count)
+                    # ac_count for OI: problems with score > 0
+                    if rank_data.get("submission_info"):
+                        oi_ac = sum(1 for v in rank_data["submission_info"].values() if (v or 0) > 0)
+                        item["ac_count"] = max(item["ac_count"], oi_ac)
             results.append(item)
 
         return self.success({"total": total, "results": results})
@@ -691,9 +701,17 @@ class UserContestDetailAPI(APIView):
             rank = OIContestRank.objects.filter(contest=contest, user=target_user).first()
             if rank:
                 my_rank = self._oi_rank_position(contest, rank)
-                submission_count = max(submission_count, rank.submission_number or 0)
                 total_score = max(total_score, rank.total_score or 0)
                 submission_info = rank.submission_info or {}
+                # OI rank submission_number is often 0 in historical data;
+                # fall back to number of problems with any entry in submission_info.
+                oi_sub_count = rank.submission_number or 0
+                if oi_sub_count == 0 and submission_info:
+                    oi_sub_count = len(submission_info)
+                submission_count = max(submission_count, oi_sub_count)
+                if submission_info:
+                    oi_ac = sum(1 for v in submission_info.values() if (v or 0) > 0)
+                    ac_count = max(ac_count, oi_ac)
 
         # Fallback: if rank rows are missing/incomplete, use calibrated contest
         # problem status cached on user profile.
