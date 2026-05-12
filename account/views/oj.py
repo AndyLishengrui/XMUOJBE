@@ -5,12 +5,14 @@ from importlib import import_module
 import qrcode
 from django.conf import settings
 from django.contrib import auth
+from django.db.models import Q
 from django.template.loader import render_to_string
 from django.utils.decorators import method_decorator
 from django.utils.timezone import now
 from django.views.decorators.csrf import ensure_csrf_cookie, csrf_exempt
 from otpauth import OtpAuth
 
+from contest.models import Contest, ACMContestRank, OIContestRank, ContestParticipation
 from problem.models import Problem
 from utils.constants import ContestRuleType
 from options.options import SysOptions
@@ -390,20 +392,377 @@ class UserRankAPI(APIView):
 class ProfileProblemDisplayIDRefreshAPI(APIView):
     @login_required
     def get(self, request):
+        from submission.models import JudgeStatus
+
         profile = request.user.userprofile
-        acm_problems = profile.acm_problems_status.get("problems", {})
-        oi_problems = profile.oi_problems_status.get("problems", {})
-        ids = list(acm_problems.keys()) + list(oi_problems.keys())
+        acm_root = profile.acm_problems_status or {}
+        oi_root = profile.oi_problems_status or {}
+        acm_problems = acm_root.get("problems", {}) or {}
+        oi_problems = oi_root.get("problems", {}) or {}
+
+        ids = []
+        ids.extend([str(i) for i in acm_problems.keys()])
+        ids.extend([str(i) for i in oi_problems.keys()])
+
         if not ids:
-            return self.success()
-        display_ids = Problem.objects.filter(id__in=ids, visible=True).values_list("_id", flat=True)
-        id_map = dict(zip(ids, display_ids))
-        for k, v in acm_problems.items():
-            v["_id"] = id_map[k]
-        for k, v in oi_problems.items():
-            v["_id"] = id_map[k]
-        profile.save(update_fields=["acm_problems_status", "oi_problems_status"])
-        return self.success()
+            return self.success({"removed": 0, "accepted_number": profile.accepted_number, "total_score": profile.total_score})
+
+        valid_rows = Problem.objects.filter(
+            id__in=ids,
+            contest_id__isnull=True,
+            visible=True
+        ).values("id", "_id")
+        valid_map = {str(row["id"]): row["_id"] for row in valid_rows}
+
+        new_acm = {}
+        for pid, item in acm_problems.items():
+            spid = str(pid)
+            display_id = valid_map.get(spid)
+            if not display_id or not isinstance(item, dict):
+                continue
+            new_item = dict(item)
+            new_item["_id"] = display_id
+            new_acm[spid] = new_item
+
+        new_oi = {}
+        for pid, item in oi_problems.items():
+            spid = str(pid)
+            display_id = valid_map.get(spid)
+            if not display_id or not isinstance(item, dict):
+                continue
+            new_item = dict(item)
+            new_item["_id"] = display_id
+            new_item["score"] = int(new_item.get("score", 0) or 0)
+            new_oi[spid] = new_item
+
+        acm_accepted = sum(1 for item in new_acm.values() if item.get("status") == JudgeStatus.ACCEPTED)
+        oi_accepted = sum(1 for item in new_oi.values() if item.get("status") == JudgeStatus.ACCEPTED)
+        total_score = sum(item.get("score", 0) for item in new_oi.values())
+
+        old_count = len(acm_problems) + len(oi_problems)
+        new_count = len(new_acm) + len(new_oi)
+
+        acm_root["problems"] = new_acm
+        oi_root["problems"] = new_oi
+        profile.acm_problems_status = acm_root
+        profile.oi_problems_status = oi_root
+        profile.accepted_number = acm_accepted + oi_accepted
+        profile.total_score = total_score
+        profile.save(update_fields=["acm_problems_status", "oi_problems_status", "accepted_number", "total_score"])
+
+        return self.success({
+            "removed": max(old_count - new_count, 0),
+            "accepted_number": profile.accepted_number,
+            "total_score": profile.total_score
+        })
+
+
+class UserContestSummaryAPI(APIView):
+    """
+    Contest submissions within each experiment are recorded exclusively in the
+    ACMContestRank / OIContestRank tables (via submission_info JSON). The global
+    submission table is NOT used here — it only covers public-problem submissions.
+    """
+
+    @staticmethod
+    def _get_target_user(request):
+        username = request.GET.get("username")
+        if not username and request.user.is_authenticated:
+            return request.user
+        if not username:
+            raise User.DoesNotExist
+        return User.objects.get(username=username, is_disabled=False)
+
+    @staticmethod
+    def _acm_rank_position(contest, rank):
+        better_count = ACMContestRank.objects.filter(
+            contest=contest,
+            user__admin_type=AdminType.REGULAR_USER,
+            user__is_disabled=False
+        ).filter(
+            Q(accepted_number__gt=rank.accepted_number) |
+            Q(accepted_number=rank.accepted_number, total_time__lt=rank.total_time)
+        ).count()
+        return better_count + 1
+
+    @staticmethod
+    def _oi_rank_position(contest, rank):
+        better_count = OIContestRank.objects.filter(
+            contest=contest,
+            user__admin_type=AdminType.REGULAR_USER,
+            user__is_disabled=False,
+            total_score__gt=rank.total_score
+        ).count()
+        return better_count + 1
+
+    def get(self, request):
+        if not request.GET.get("username") and not request.user.is_authenticated:
+            return self.error("Please login first", "permission-denied")
+        try:
+            target_user = self._get_target_user(request)
+        except User.DoesNotExist:
+            return self.error("User does not exist")
+
+        try:
+            offset = max(int(request.GET.get("offset", 0)), 0)
+            limit = max(int(request.GET.get("limit", 20)), 1)
+        except ValueError:
+            return self.error("Parameter error")
+
+        participations = list(ContestParticipation.objects.filter(user=target_user)
+                              .values("contest_id", "submission_number", "accepted_number", "total_score"))
+        participation_map = {item["contest_id"]: item for item in participations}
+
+        # Keep backward compatibility for historical data that may have rank rows
+        # but no participation rows yet.
+        acm_ranks = list(ACMContestRank.objects.filter(user=target_user).values(
+            "contest_id", "submission_number", "accepted_number", "total_time"
+        ))
+        oi_ranks = list(OIContestRank.objects.filter(user=target_user).values(
+            "contest_id", "submission_number", "total_score"
+        ))
+        acm_rank_map = {item["contest_id"]: item for item in acm_ranks}
+        oi_rank_map = {item["contest_id"]: item for item in oi_ranks}
+
+        contest_ids = set(participation_map.keys()) | set(acm_rank_map.keys()) | set(oi_rank_map.keys())
+
+        contests = Contest.objects.filter(id__in=contest_ids, visible=True).order_by("-end_time", "-id")
+        total = contests.count()
+        contests = list(contests[offset: offset + limit])
+
+        results = []
+        for contest in contests:
+            item = {
+                "contest_id": contest.id,
+                "contest_title": contest.title,
+                "rule_type": contest.rule_type,
+                "start_time": datetime2str(contest.start_time),
+                "end_time": datetime2str(contest.end_time),
+                "my_rank": None,
+                "submission_count": 0,
+                "ac_count": 0,
+                "total_score": 0
+            }
+            participation = participation_map.get(contest.id)
+            if participation:
+                item["submission_count"] = participation["submission_number"]
+                item["ac_count"] = participation["accepted_number"]
+                item["total_score"] = participation["total_score"]
+
+            if contest.rule_type == ContestRuleType.ACM:
+                rank_data = acm_rank_map.get(contest.id)
+                if rank_data:
+                    rank = ACMContestRank(
+                        contest_id=contest.id,
+                        user_id=target_user.id,
+                        submission_number=rank_data["submission_number"],
+                        accepted_number=rank_data["accepted_number"],
+                        total_time=rank_data["total_time"]
+                    )
+                    item["my_rank"] = self._acm_rank_position(contest, rank)
+                    item["submission_count"] = rank_data["submission_number"]
+                    item["ac_count"] = rank_data["accepted_number"]
+            else:
+                rank_data = oi_rank_map.get(contest.id)
+                if rank_data:
+                    rank = OIContestRank(
+                        contest_id=contest.id,
+                        user_id=target_user.id,
+                        submission_number=rank_data["submission_number"],
+                        total_score=rank_data["total_score"]
+                    )
+                    item["my_rank"] = self._oi_rank_position(contest, rank)
+                    item["submission_count"] = rank_data["submission_number"]
+                    item["total_score"] = rank_data["total_score"]
+            results.append(item)
+
+        return self.success({"total": total, "results": results})
+
+
+class UserContestDetailAPI(APIView):
+    """
+    Contest/experiment detail for a user. All per-problem status is derived from
+    ACMContestRank.submission_info or OIContestRank.submission_info JSON fields.
+    ACM submission_info format: {"<problem_id>": {"is_ac": bool, "ac_time": int, "error_number": int}}
+    OI  submission_info format: {"<problem_id>": <score_int>}
+    The global submission table is NOT used here.
+    """
+
+    @staticmethod
+    def _get_target_user(request):
+        username = request.GET.get("username")
+        if not username and request.user.is_authenticated:
+            return request.user
+        if not username:
+            raise User.DoesNotExist
+        return User.objects.get(username=username, is_disabled=False)
+
+    @staticmethod
+    def _acm_rank_position(contest, rank):
+        better_count = ACMContestRank.objects.filter(
+            contest=contest,
+            user__admin_type=AdminType.REGULAR_USER,
+            user__is_disabled=False
+        ).filter(
+            Q(accepted_number__gt=rank.accepted_number) |
+            Q(accepted_number=rank.accepted_number, total_time__lt=rank.total_time)
+        ).count()
+        return better_count + 1
+
+    @staticmethod
+    def _oi_rank_position(contest, rank):
+        better_count = OIContestRank.objects.filter(
+            contest=contest,
+            user__admin_type=AdminType.REGULAR_USER,
+            user__is_disabled=False,
+            total_score__gt=rank.total_score
+        ).count()
+        return better_count + 1
+
+    def get(self, request):
+        if not request.GET.get("username") and not request.user.is_authenticated:
+            return self.error("Please login first", "permission-denied")
+        contest_id = request.GET.get("contest_id")
+        if not contest_id:
+            return self.error("Parameter error")
+
+        try:
+            target_user = self._get_target_user(request)
+        except User.DoesNotExist:
+            return self.error("User does not exist")
+
+        try:
+            contest = Contest.objects.get(id=contest_id, visible=True)
+        except Contest.DoesNotExist:
+            return self.error("Contest does not exist")
+
+        participation = ContestParticipation.objects.filter(contest=contest, user=target_user).first()
+        my_rank = None
+        submission_count = participation.submission_number if participation else 0
+        ac_count = participation.accepted_number if participation else 0
+        total_score = participation.total_score if participation else 0
+        submission_info = {}
+
+        if contest.rule_type == ContestRuleType.ACM:
+            rank = ACMContestRank.objects.filter(contest=contest, user=target_user).first()
+            if rank:
+                my_rank = self._acm_rank_position(contest, rank)
+                submission_count = max(submission_count, rank.submission_number or 0)
+                ac_count = max(ac_count, rank.accepted_number or 0)
+                submission_info = rank.submission_info or {}
+        else:
+            rank = OIContestRank.objects.filter(contest=contest, user=target_user).first()
+            if rank:
+                my_rank = self._oi_rank_position(contest, rank)
+                submission_count = max(submission_count, rank.submission_number or 0)
+                total_score = max(total_score, rank.total_score or 0)
+                submission_info = rank.submission_info or {}
+
+        # Fallback: if rank rows are missing/incomplete, use calibrated contest
+        # problem status cached on user profile.
+        if not submission_info:
+            profile = target_user.userprofile
+            if contest.rule_type == ContestRuleType.ACM:
+                contest_problems = (profile.acm_problems_status or {}).get("contest_problems", {})
+                for pid, item in contest_problems.items():
+                    if isinstance(item, dict):
+                        submission_info[pid] = {
+                            "is_ac": item.get("status") == 0,
+                            "error_number": 0,
+                            "ac_time": None
+                        }
+            else:
+                contest_problems = (profile.oi_problems_status or {}).get("contest_problems", {})
+                for pid, item in contest_problems.items():
+                    if isinstance(item, dict):
+                        submission_info[pid] = item.get("score", 100 if item.get("status") == 0 else 0)
+
+        if not participation and not submission_info:
+            return self.error("No participation record in this contest")
+
+        problems = list(Problem.objects.filter(contest_id=contest.id, visible=True)
+                        .values("id", "_id", "title")
+                        .order_by("_id"))
+
+        problem_items = []
+        for problem in problems:
+            info = submission_info.get(str(problem["id"]))
+            if contest.rule_type == ContestRuleType.ACM:
+                # info = {"is_ac": bool, "ac_time": int, "error_number": int, ...}
+                is_ac = bool(info and info.get("is_ac"))
+                error_number = info.get("error_number", 0) if info else 0
+                ac_time = info.get("ac_time") if (info and is_ac) else None
+                problem_items.append({
+                    "display_id": problem["_id"],
+                    "title": problem["title"],
+                    "is_ac": is_ac,
+                    "error_number": error_number,
+                    "ac_time": ac_time,
+                    "best_score": None
+                })
+            else:
+                # info = score (int) or None
+                best_score = info if info is not None else 0
+                is_ac = best_score > 0
+                problem_items.append({
+                    "display_id": problem["_id"],
+                    "title": problem["title"],
+                    "is_ac": is_ac,
+                    "error_number": 0,
+                    "ac_time": None,
+                    "best_score": best_score
+                })
+
+        return self.success({
+            "contest_id": contest.id,
+            "contest_title": contest.title,
+            "rule_type": contest.rule_type,
+            "my_rank": my_rank,
+            "submission_count": submission_count,
+            "ac_count": ac_count,
+            "total_score": total_score,
+            "problem_items": problem_items
+        })
+
+
+class ContestCalibrateAPI(APIView):
+    """
+    Manually trigger calibration for a specific contest.
+    This allows users to re-sync data from rank tables into participation record.
+    """
+
+    @login_required
+    def post(self, request):
+        contest_id = request.data.get("contest_id")
+        if not contest_id:
+            return self.error("Parameter error")
+
+        try:
+            contest = Contest.objects.get(id=contest_id, visible=True)
+        except Contest.DoesNotExist:
+            return self.error("Contest does not exist")
+
+        user = request.user
+        participation = ContestParticipation.objects.filter(contest=contest, user=user).first()
+
+        if not participation:
+            return self.error("No participation record for this contest")
+
+        try:
+            # Force calibration regardless of previous state
+            ContestParticipation.calibrate_once(user, contest, force=True)
+
+            # Reload to get updated data
+            participation.refresh_from_db()
+            return self.success({
+                "success": True,
+                "is_calibrated": participation.is_calibrated,
+                "submission_number": participation.submission_number,
+                "accepted_number": participation.accepted_number,
+                "total_score": participation.total_score
+            })
+        except Exception as e:
+            return self.error(f"Calibration failed: {str(e)}")
 
 
 class OpenAPIAppkeyAPI(APIView):

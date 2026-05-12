@@ -1,4 +1,5 @@
 import random
+from collections import defaultdict
 from django.db.models import Q
 from utils.api import APIView
 from account.decorators import check_contest_permission, check_contest_password
@@ -106,8 +107,31 @@ class ContestProblemAPI(APIView):
                 problems_status = profile.acm_problems_status.get("contest_problems", {})
             else:
                 problems_status = profile.oi_problems_status.get("contest_problems", {})
+
+            # Fallback from contest-scoped submissions only. This keeps contest
+            # and global problem submissions isolated while restoring status tags.
+            from submission.models import Submission, JudgeStatus
+            problem_ids = [p["id"] for p in queryset_values]
+            submission_status_map = defaultdict(lambda: None)
+            if problem_ids:
+                rows = Submission.objects.filter(
+                    contest_id=self.contest.id,
+                    user_id=request.user.id,
+                    problem_id__in=problem_ids
+                ).values("problem_id", "result")
+                for row in rows:
+                    pid = row["problem_id"]
+                    result = row["result"]
+                    if result == JudgeStatus.ACCEPTED:
+                        submission_status_map[pid] = JudgeStatus.ACCEPTED
+                    elif submission_status_map[pid] is None:
+                        submission_status_map[pid] = result
+
             for problem in queryset_values:
-                problem["my_status"] = problems_status.get(str(problem["id"]), {}).get("status")
+                status = problems_status.get(str(problem["id"]), {}).get("status")
+                if status is None:
+                    status = submission_status_map.get(problem["id"])
+                problem["my_status"] = status
 
     @check_contest_permission(check_type="problems")
     def get(self, request):
