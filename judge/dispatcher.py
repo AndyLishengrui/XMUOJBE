@@ -9,7 +9,7 @@ from django.db.models import F
 
 from account.models import User
 from conf.models import JudgeServer
-from contest.models import ContestRuleType, ACMContestRank, OIContestRank, ContestStatus
+from contest.models import ContestRuleType, ACMContestRank, OIContestRank, ContestStatus, ContestParticipation
 from options.options import SysOptions
 from problem.models import Problem, ProblemRuleType
 from problem.utils import parse_problem_template
@@ -393,6 +393,22 @@ class JudgeDispatcher(DispatcherBase):
             except IntegrityError:
                 rank = get_rank(model)
         func(rank)
+        if self.contest.rule_type == ContestRuleType.ACM:
+            ContestParticipation.sync_from_rank(
+                user_id=self.submission.user_id,
+                contest=self.contest,
+                submission_number=rank.submission_number,
+                accepted_number=rank.accepted_number,
+                total_score=0
+            )
+        else:
+            ContestParticipation.sync_from_rank(
+                user_id=self.submission.user_id,
+                contest=self.contest,
+                submission_number=rank.submission_number,
+                accepted_number=0,
+                total_score=rank.total_score
+            )
 
     def _update_acm_contest_rank(self, rank):
         info = rank.submission_info.get(str(self.submission.problem_id))

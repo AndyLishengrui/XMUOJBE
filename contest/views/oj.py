@@ -13,8 +13,8 @@ from account.models import AdminType, User, UserProfile
 from account.models import AdminType
 from account.decorators import login_required, check_contest_permission, check_contest_password
 
-from utils.constants import ContestRuleType, ContestStatus
-from ..models import ContestAnnouncement, Contest, OIContestRank, ACMContestRank
+from utils.constants import ContestRuleType, ContestStatus, ContestType
+from ..models import ContestAnnouncement, Contest, OIContestRank, ACMContestRank, ContestParticipation
 from ..serializers import ContestAnnouncementSerializer
 from ..serializers import ContestSerializer, ContestPasswordVerifySerializer
 from ..serializers import OIContestRankSerializer, ACMContestRankSerializer
@@ -42,6 +42,18 @@ class ContestAPI(APIView):
             contest = Contest.objects.get(id=id, visible=True)
         except Contest.DoesNotExist:
             return self.error("Contest does not exist")
+        # Record entry for authenticated users when contest page is accessed.
+        if request.user.is_authenticated:
+            can_record = contest.contest_type == ContestType.PUBLIC_CONTEST or request.user.is_contest_admin(contest)
+            if not can_record and contest.contest_type == ContestType.PASSWORD_PROTECTED_CONTEST:
+                session_pass = request.session.get(CONTEST_PASSWORD_SESSION_KEY, {}).get(contest.id)
+                can_record = check_contest_password(session_pass, contest.password)
+            if can_record:
+                try:
+                    ContestParticipation.mark_enter(request.user, contest)
+                    ContestParticipation.calibrate_once(request.user, contest)
+                except Exception:
+                    pass
         data = ContestSerializer(contest).data
         data["now"] = datetime2str(now())
         return self.success(data)
@@ -86,6 +98,11 @@ class ContestPasswordVerifyAPI(APIView):
         request.session[CONTEST_PASSWORD_SESSION_KEY][contest.id] = data["password"]
         # https://docs.djangoproject.com/en/dev/topics/http/sessions/#when-sessions-are-saved
         request.session.modified = True
+        try:
+            ContestParticipation.mark_enter(request.user, contest)
+            ContestParticipation.calibrate_once(request.user, contest)
+        except Exception:
+            pass
         return self.success(True)
 
 
@@ -100,7 +117,14 @@ class ContestAccessAPI(APIView):
         except Contest.DoesNotExist:
             return self.error("Contest does not exist")
         session_pass = request.session.get(CONTEST_PASSWORD_SESSION_KEY, {}).get(contest.id)
-        return self.success({"access": check_contest_password(session_pass, contest.password)})
+        access = check_contest_password(session_pass, contest.password)
+        if access:
+            try:
+                ContestParticipation.mark_enter(request.user, contest)
+                ContestParticipation.calibrate_once(request.user, contest)
+            except Exception:
+                pass
+        return self.success({"access": access})
 
 
 class ContestRankAPI(APIView):

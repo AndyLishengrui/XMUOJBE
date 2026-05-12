@@ -3,7 +3,7 @@ import hashlib
 import time
 
 from problem.models import Problem
-from contest.models import Contest, ContestType, ContestStatus, ContestRuleType
+from contest.models import Contest, ContestType, ContestStatus, ContestRuleType, ContestParticipation
 from utils.api import JSONResponse, APIError
 from utils.constants import CONTEST_PASSWORD_SESSION_KEY
 from .models import ProblemPermission
@@ -131,6 +131,12 @@ def check_contest_permission(check_type="details"):
                 if not self.contest.real_time_rank and (check_type == "ranks" or check_type == "submissions"):
                     return self.error(f"No permission to get {check_type}")
 
+            # Record successful contest access for user-home participation history.
+            try:
+                ContestParticipation.mark_enter(user, self.contest)
+                ContestParticipation.calibrate_once(user, self.contest)
+            except Exception:
+                pass
             return func(*args, **kwargs)
         return _check_permission
     return decorator

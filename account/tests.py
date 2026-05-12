@@ -11,6 +11,8 @@ from otpauth import OtpAuth
 from utils.api.tests import APIClient, APITestCase
 from utils.shortcuts import rand_str
 from options.options import SysOptions
+from problem.models import Problem, ProblemRuleType
+from utils.constants import Difficulty, JudgeStatus
 
 from .models import AdminType, ProblemPermission, User
 from utils.constants import ContestRuleType
@@ -494,7 +496,70 @@ class UserRankAPITest(APITestCase):
 
 class ProfileProblemDisplayIDRefreshAPITest(APITestCase):
     def setUp(self):
-        pass
+        self.user = self.create_user("refresh_user", "refresh_pass", login=True)
+        self.url = self.reverse("display_id_fresh")
+
+    def _create_public_problem(self, display_id, rule_type=ProblemRuleType.ACM):
+        return Problem.objects.create(
+            _id=display_id,
+            contest=None,
+            title=f"Problem {display_id}",
+            description="d",
+            input_description="i",
+            output_description="o",
+            samples=[{"input": "1", "output": "1"}],
+            test_case_id="tc",
+            test_case_score=[],
+            hint="",
+            languages=["Python3"],
+            template={},
+            created_by=self.user,
+            time_limit=1000,
+            memory_limit=128,
+            rule_type=rule_type,
+            visible=True,
+            difficulty=Difficulty.Low,
+            source="",
+            share_submission=False
+        )
+
+    def test_refresh_filters_invalid_public_problems_and_recomputes_stats(self):
+        acm_valid = self._create_public_problem("ACM100")
+        oi_valid = self._create_public_problem("OI100", rule_type=ProblemRuleType.OI)
+        profile = self.user.userprofile
+
+        profile.acm_problems_status = {
+            "problems": {
+                str(acm_valid.id): {"status": JudgeStatus.ACCEPTED, "_id": "OLD"},
+                "999999": {"status": JudgeStatus.ACCEPTED, "_id": "STALE"}
+            },
+            "contest_problems": {}
+        }
+        profile.oi_problems_status = {
+            "problems": {
+                str(oi_valid.id): {"status": JudgeStatus.ACCEPTED, "_id": "OLD", "score": 300},
+                "888888": {"status": JudgeStatus.WRONG_ANSWER, "_id": "STALE", "score": 999}
+            },
+            "contest_problems": {}
+        }
+        profile.accepted_number = 999
+        profile.total_score = 999
+        profile.save(update_fields=["acm_problems_status", "oi_problems_status", "accepted_number", "total_score"])
+
+        resp = self.client.get(self.url)
+        self.assertSuccess(resp)
+        self.assertEqual(resp.data["data"]["removed"], 2)
+        self.user.refresh_from_db()
+        profile = self.user.userprofile
+
+        acm_problems = profile.acm_problems_status.get("problems", {})
+        oi_problems = profile.oi_problems_status.get("problems", {})
+        self.assertEqual(set(acm_problems.keys()), {str(acm_valid.id)})
+        self.assertEqual(set(oi_problems.keys()), {str(oi_valid.id)})
+        self.assertEqual(acm_problems[str(acm_valid.id)]["_id"], acm_valid._id)
+        self.assertEqual(oi_problems[str(oi_valid.id)]["_id"], oi_valid._id)
+        self.assertEqual(profile.accepted_number, 2)
+        self.assertEqual(profile.total_score, 300)
 
 
 class AdminUserTest(APITestCase):
