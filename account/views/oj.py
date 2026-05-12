@@ -51,6 +51,10 @@ class UserProfileAPI(APIView):
                 show_real_name = True
         except User.DoesNotExist:
             return self.error("User does not exist")
+        # Non-SuperAdmin users may only view their own profile
+        if username and request.user.is_authenticated and username != request.user.username:
+            if request.user.admin_type != AdminType.SUPER_ADMIN:
+                return self.error("Permission denied")
         return self.success(UserProfileSerializer(user.userprofile, show_real_name=show_real_name).data)
 
     @validate_serializer(EditUserProfileSerializer)
@@ -499,6 +503,11 @@ class UserContestSummaryAPI(APIView):
     def get(self, request):
         if not request.GET.get("username") and not request.user.is_authenticated:
             return self.error("Please login first", "permission-denied")
+        # Only SuperAdmin can query other users' contest history
+        if request.GET.get("username") and request.user.is_authenticated:
+            if request.GET["username"] != request.user.username:
+                if request.user.admin_type != AdminType.SUPER_ADMIN:
+                    return self.error("Permission denied")
         try:
             target_user = self._get_target_user(request)
         except User.DoesNotExist:
@@ -669,6 +678,11 @@ class UserContestDetailAPI(APIView):
     def get(self, request):
         if not request.GET.get("username") and not request.user.is_authenticated:
             return self.error("Please login first", "permission-denied")
+        # Only SuperAdmin can query other users' contest detail
+        if request.GET.get("username") and request.user.is_authenticated:
+            if request.GET["username"] != request.user.username:
+                if request.user.admin_type != AdminType.SUPER_ADMIN:
+                    return self.error("Permission denied")
         contest_id = request.GET.get("contest_id")
         if not contest_id:
             return self.error("Parameter error")
