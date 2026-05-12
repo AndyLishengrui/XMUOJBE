@@ -818,17 +818,11 @@ class ContestCalibrateAPI(APIView):
             return self.error("Contest does not exist")
 
         user = request.user
-        participation = ContestParticipation.objects.filter(contest=contest, user=user).first()
-
-        if not participation:
-            return self.error("No participation record for this contest")
 
         try:
-            # Force calibration regardless of previous state
-            ContestParticipation.calibrate_once(user, contest, force=True)
-
-            # Reload to get updated data
-            participation.refresh_from_db()
+            # Force calibration regardless of previous state. If participation
+            # does not exist yet, calibrate_once will create it automatically.
+            participation = ContestParticipation.calibrate_once(user, contest, force=True)
             return self.success({
                 "success": True,
                 "is_calibrated": participation.is_calibrated,
