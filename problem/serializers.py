@@ -91,6 +91,11 @@ class EditContestProblemSerializer(CreateOrEditProblemSerializer):
     contest_id = serializers.IntegerField()
 
 
+class BatchUpdateContestProblemLanguagesSerializer(serializers.Serializer):
+    contest_id = serializers.IntegerField()
+    languages = LanguageNameMultiChoiceField()
+
+
 class TagSerializer(serializers.ModelSerializer):
     problem_count = serializers.IntegerField(read_only=True)
 

@@ -354,6 +354,7 @@ class DownloadTestCaseAPITest(ProblemCreateTestBase):
 class ContestProblemAdminTest(APITestCase):
     def setUp(self):
         self.url = self.reverse("contest_problem_admin_api")
+        self.batch_lang_url = self.reverse("contest_problem_batch_language_admin_api")
         self.create_admin()
         self.contest = self.client.post(self.reverse("contest_admin_api"), data=DEFAULT_CONTEST_DATA).data["data"]
         ProblemTag.objects.create(name="test", normalized_name="test")
@@ -378,6 +379,34 @@ class ContestProblemAdminTest(APITestCase):
         problem_id = contest_problem["id"]
         resp = self.client.get(f"{self.url}?contest_id={contest_id}&id={problem_id}")
         self.assertSuccess(resp)
+
+    def test_batch_update_contest_problem_languages(self):
+        data1 = copy.deepcopy(DEFAULT_PROBLEM_DATA)
+        data1["contest_id"] = self.contest["id"]
+        data1["_id"] = "A-110"
+        data2 = copy.deepcopy(DEFAULT_PROBLEM_DATA)
+        data2["contest_id"] = self.contest["id"]
+        data2["_id"] = "A-111"
+        self.client.post(self.url, data=data1)
+        self.client.post(self.url, data=data2)
+
+        resp = self.client.post(self.batch_lang_url, data={
+            "contest_id": self.contest["id"],
+            "languages": ["C", "Java", "Python3"]
+        })
+        self.assertSuccess(resp)
+        self.assertEqual(resp.data["data"]["updated_count"], 2)
+
+        problems = Problem.objects.filter(contest_id=self.contest["id"]).order_by("_id")
+        for problem in problems:
+            self.assertListEqual(problem.languages, ["C", "Java", "Python3"])
+
+    def test_batch_update_contest_problem_languages_empty(self):
+        resp = self.client.post(self.batch_lang_url, data={
+            "contest_id": self.contest["id"],
+            "languages": []
+        })
+        self.assertFailed(resp)
 
 
 class ContestProblemTest(ProblemCreateTestBase):

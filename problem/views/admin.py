@@ -28,7 +28,7 @@ from ..serializers import (CreateContestProblemSerializer, CompileSPJSerializer,
                            AddContestProblemSerializer, ExportProblemSerializer,
                            ExportProblemRequestSerialzier, UploadProblemForm, ImportProblemSerializer,
                FPSProblemSerializer, ProblemTagAdminSerializer, UpsertProblemTagSerializer,
-               MergeProblemTagSerializer)
+               MergeProblemTagSerializer, BatchUpdateContestProblemLanguagesSerializer)
 from ..tag import (assign_problem_tags, clean_tag_aliases, clean_tag_name,
            normalize_problem_tag_instance, serialize_problem_tag_audit, merge_problem_tags,
            delete_problem_tag)
@@ -600,6 +600,24 @@ class ContestProblemAPI(ProblemBase):
         #    shutil.rmtree(d, ignore_errors=True)
         problem.delete()
         return self.success()
+
+
+class BatchUpdateContestProblemLanguagesAPI(APIView):
+    @validate_serializer(BatchUpdateContestProblemLanguagesSerializer)
+    def post(self, request):
+        data = request.data
+        try:
+            contest = Contest.objects.get(id=data["contest_id"])
+            ensure_created_by(contest, request.user)
+        except Contest.DoesNotExist:
+            return self.error("Contest does not exist")
+
+        languages = list(dict.fromkeys(data["languages"]))
+        if len(languages) == 0:
+            return self.error("At least one language is required")
+
+        updated_count = Problem.objects.filter(contest=contest).update(languages=languages)
+        return self.success({"updated_count": updated_count})
 
 
 class MakeContestProblemPublicAPIView(APIView):

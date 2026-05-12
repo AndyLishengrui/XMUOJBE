@@ -1,6 +1,7 @@
 from django.conf.urls import url
 
 from ..views.admin import (ContestProblemAPI, ProblemAPI, TestCaseAPI, MakeContestProblemPublicAPIView,
+                           BatchUpdateContestProblemLanguagesAPI,
                            CompileSPJAPI, AddContestProblemAPI, ExportProblemAPI, ImportProblemAPI,
                            FPSProblemImport, ProblemTagAdminAPI, ProblemTagAuditAPI, ProblemTagMergeAPI)
 
@@ -12,6 +13,8 @@ urlpatterns = [
     url(r"^problem/tag_audit/?$", ProblemTagAuditAPI.as_view(), name="problem_tag_audit_api"),
     url(r"^problem/tag_merge/?$", ProblemTagMergeAPI.as_view(), name="problem_tag_merge_api"),
     url(r"^contest/problem/?$", ContestProblemAPI.as_view(), name="contest_problem_admin_api"),
+    url(r"^contest/problem/batch_languages/?$", BatchUpdateContestProblemLanguagesAPI.as_view(),
+        name="contest_problem_batch_language_admin_api"),
     url(r"^contest_problem/make_public/?$", MakeContestProblemPublicAPIView.as_view(), name="make_public_api"),
     url(r"^contest/add_problem_from_public/?$", AddContestProblemAPI.as_view(), name="add_contest_problem_from_public_api"),
     url(r"^export_problem/?$", ExportProblemAPI.as_view(), name="export_problem_api"),
