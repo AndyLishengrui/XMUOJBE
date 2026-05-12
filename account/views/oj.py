@@ -5,7 +5,7 @@ from importlib import import_module
 import qrcode
 from django.conf import settings
 from django.contrib import auth
-from django.db.models import Q
+from django.db.models import Q, Count
 from django.template.loader import render_to_string
 from django.utils.decorators import method_decorator
 from django.utils.timezone import now
@@ -14,6 +14,7 @@ from otpauth import OtpAuth
 
 from contest.models import Contest, ACMContestRank, OIContestRank, ContestParticipation
 from problem.models import Problem
+from submission.models import Submission, JudgeStatus
 from utils.constants import ContestRuleType
 from options.options import SysOptions
 from utils.api import APIView, validate_serializer, CSRFExemptAPIView
@@ -521,10 +522,41 @@ class UserContestSummaryAPI(APIView):
         oi_ranks = list(OIContestRank.objects.filter(user=target_user).values(
             "contest_id", "submission_number", "total_score"
         ))
+
+        # Some historical data only exists in submission table (without rank/participation).
+        submission_fallback_rows = list(
+            Submission.objects.filter(user_id=target_user.id, contest_id__isnull=False)
+            .order_by()
+            .values("contest_id")
+            .annotate(submission_number=Count("id"))
+        )
+        accepted_fallback_rows = list(
+            Submission.objects.filter(
+                user_id=target_user.id,
+                contest_id__isnull=False,
+                result=JudgeStatus.ACCEPTED
+            )
+            .order_by()
+            .values("contest_id")
+            .annotate(accepted_number=Count("problem_id", distinct=True))
+        )
+        submission_fallback_map = {
+            item["contest_id"]: {
+                "submission_number": item["submission_number"],
+                "accepted_number": 0
+            }
+            for item in submission_fallback_rows
+        }
+        for item in accepted_fallback_rows:
+            contest_id = item["contest_id"]
+            if contest_id not in submission_fallback_map:
+                submission_fallback_map[contest_id] = {"submission_number": 0, "accepted_number": 0}
+            submission_fallback_map[contest_id]["accepted_number"] = item["accepted_number"]
+
         acm_rank_map = {item["contest_id"]: item for item in acm_ranks}
         oi_rank_map = {item["contest_id"]: item for item in oi_ranks}
 
-        contest_ids = set(participation_map.keys()) | set(acm_rank_map.keys()) | set(oi_rank_map.keys())
+        contest_ids = set(participation_map.keys()) | set(acm_rank_map.keys()) | set(oi_rank_map.keys()) | set(submission_fallback_map.keys())
 
         contests = Contest.objects.filter(id__in=contest_ids, visible=True).order_by("-end_time", "-id")
         total = contests.count()
@@ -548,6 +580,11 @@ class UserContestSummaryAPI(APIView):
                 item["submission_count"] = participation["submission_number"]
                 item["ac_count"] = participation["accepted_number"]
                 item["total_score"] = participation["total_score"]
+
+            fallback = submission_fallback_map.get(contest.id)
+            if fallback:
+                item["submission_count"] = max(item["submission_count"], fallback["submission_number"])
+                item["ac_count"] = max(item["ac_count"], fallback["accepted_number"])
 
             if contest.rule_type == ContestRuleType.ACM:
                 rank_data = acm_rank_map.get(contest.id)
@@ -676,6 +713,44 @@ class UserContestDetailAPI(APIView):
                 for pid, item in contest_problems.items():
                     if isinstance(item, dict):
                         submission_info[pid] = item.get("score", 100 if item.get("status") == 0 else 0)
+
+        # Last fallback for historical records: derive from contest submissions.
+        if not submission_info:
+            contest_submissions = list(
+                Submission.objects.filter(user_id=target_user.id, contest_id=contest.id)
+                .values("problem_id", "result", "create_time", "statistic_info")
+                .order_by("create_time")
+            )
+            submission_count = max(submission_count, len(contest_submissions))
+
+            if contest.rule_type == ContestRuleType.ACM:
+                ac_problem_count = 0
+                for row in contest_submissions:
+                    pid = str(row["problem_id"])
+                    if pid not in submission_info:
+                        submission_info[pid] = {"is_ac": False, "error_number": 0, "ac_time": None}
+                    if submission_info[pid]["is_ac"]:
+                        continue
+                    if row["result"] == JudgeStatus.ACCEPTED:
+                        submission_info[pid]["is_ac"] = True
+                        if row["create_time"] and contest.start_time:
+                            submission_info[pid]["ac_time"] = int((row["create_time"] - contest.start_time).total_seconds())
+                        ac_problem_count += 1
+                    else:
+                        submission_info[pid]["error_number"] += 1
+                ac_count = max(ac_count, ac_problem_count)
+            else:
+                for row in contest_submissions:
+                    pid = str(row["problem_id"])
+                    score = 0
+                    stat = row.get("statistic_info") or {}
+                    if isinstance(stat, dict):
+                        score = int(stat.get("score") or 0)
+                    if row["result"] == JudgeStatus.ACCEPTED:
+                        score = max(score, 100)
+                    submission_info[pid] = max(submission_info.get(pid, 0), score)
+                total_score = max(total_score, sum(submission_info.values()))
+                ac_count = max(ac_count, sum(1 for v in submission_info.values() if v > 0))
 
         if not participation and not submission_info:
             return self.error("No participation record in this contest")
