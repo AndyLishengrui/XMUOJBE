@@ -537,6 +537,10 @@ class ContestProblemAPI(ProblemBase):
         keyword = request.GET.get("keyword")
         if keyword:
             problems = problems.filter(title__contains=keyword)
+        # 管理后台始终显示全部题目（包括visible=false的），
+        # 传入 visible_only=1 可只看可见题目
+        if request.GET.get("visible_only") == "1":
+            problems = problems.filter(visible=True)
         return self.success(self.paginate_data(request, problems, ProblemAdminSerializer))
 
     @validate_serializer(EditContestProblemSerializer)
