@@ -273,6 +273,14 @@ class _SysOptionsMeta(type):
     def spj_language_names(cls):
         return [item["name"] for item in cls.languages if "spj" in item and item.get("visible", True)]
 
+    @my_property(ttl=DEFAULT_SHORT_TTL)
+    def visible_language_names(cls):
+        return [item["name"] for item in cls.languages if item.get("visible", True)]
+
+    @my_property(ttl=DEFAULT_SHORT_TTL)
+    def visible_spj_language_names(cls):
+        return [item["name"] for item in cls.languages if "spj" in item and item.get("visible", True)]
+
 
     @my_property(ttl=DEFAULT_SHORT_TTL)
     def visible_languages(cls):
