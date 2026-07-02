@@ -74,7 +74,11 @@ def get_public_test_case_download_flag(test_case_id, fallback=None):
 
 
 def is_problem_public_test_case_download_enabled(problem):
-    fallback = problem.source == "xmu"
+    # 考试题目强制不允许下载测试数据
+    if problem.contest_id and problem.contest.is_exam:
+        return False
+    # 需要显式开启 allow_public_test_case_download 才允许下载
+    fallback = False
     return bool(get_public_test_case_download_flag(problem.test_case_id, fallback=fallback))
 
 

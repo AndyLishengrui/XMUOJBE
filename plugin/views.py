@@ -241,14 +241,23 @@ class PluginProblemWorkspaceAPI(APIView, ContestAccessMixin, ProblemStatusMixin)
         problem_data["can_download_test_case"] = is_problem_public_test_case_download_enabled(problem)
         self.add_problem_status(request, [problem_data], rule_type=contest.rule_type if contest else None,
                                 contest_mode=contest is not None)
-        test_case_info = load_test_case_info(problem.test_case_id) if problem_data["can_download_test_case"] else None
-        problem_data["test_case_manifest"] = None
-        if test_case_info is not None:
-            problem_data["test_case_manifest"] = {
-                "spj": test_case_info.get("spj", False),
-                "test_cases": list(test_case_info.get("test_cases", {}).values()),
-                "download_url": f"/api/dl_test_case?problem_id={problem.id}",
-            }
+
+        is_exam = bool(problem.contest and problem.contest.is_exam)
+        problem_data["is_exam"] = is_exam
+
+        # 考试题目：强制禁用下载，不暴露测试数据清单
+        if is_exam:
+            problem_data["can_download_test_case"] = False
+            problem_data["test_case_manifest"] = None
+        else:
+            test_case_info = load_test_case_info(problem.test_case_id) if problem_data["can_download_test_case"] else None
+            problem_data["test_case_manifest"] = None
+            if test_case_info is not None:
+                problem_data["test_case_manifest"] = {
+                    "spj": test_case_info.get("spj", False),
+                    "test_cases": list(test_case_info.get("test_cases", {}).values()),
+                    "download_url": f"/api/dl_test_case?problem_id={problem.id}",
+                }
         return self.success(problem_data)
 
 
@@ -350,6 +359,10 @@ class PluginTestCaseDownloadAPI(APIView, ContestAccessMixin, DLTestCaseZipProces
 
         contest = problem.contest
         if contest:
+            # 考试题目禁止下载测试数据（核心防线）
+            if contest.is_exam:
+                return self.error("考试题目不允许下载测试数据")
+
             permission_error = self.check_plugin_contest_permission(
                 request,
                 contest,

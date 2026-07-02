@@ -279,6 +279,8 @@ class DLTestCaseAPI(APIView, DLTestCaseZipProcessor):
             return self.error(error_message)
         if not is_problem_public_test_case_download_enabled(problem):
             return self.error("Problem does not support download")
+        if problem.contest and problem.contest.is_exam:
+            return self.error("考试题目不允许下载测试数据")
 
         test_case_dir = os.path.join(settings.TEST_CASE_DIR, problem.test_case_id)
         if not os.path.isdir(test_case_dir):
