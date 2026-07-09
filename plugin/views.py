@@ -233,6 +233,26 @@ class PluginProblemWorkspaceAPI(APIView, ContestAccessMixin, ProblemStatusMixin)
             )
             if permission_error:
                 return permission_error
+            if contest and contest.is_exam and not request.user.is_contest_admin(contest):
+                from utils.cache import cache
+                from utils.throttling import TokenBucket
+                bucket = TokenBucket(
+                    key=f"plugin_exam_view:{request.user.id}:{contest.id}",
+                    redis_conn=cache, capacity=10, fill_rate=0.2, default_capacity=10
+                )
+                can, wait = bucket.consume()
+                if not can:
+                    return self.error(f"请求太频繁，请等待 {int(wait)} 秒")
+                import logging
+                from logging.handlers import RotatingFileHandler
+                audit = logging.getLogger("exam_audit")
+                audit.setLevel(logging.INFO)
+                if not audit.handlers:
+                    h = RotatingFileHandler("/data/log/exam_audit.log", maxBytes=52_428_800, backupCount=3)
+                    h.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%Y-%m-%dT%H:%M:%S"))
+                    audit.addHandler(h)
+                ua = request.META.get("HTTP_USER_AGENT", "")[:80]
+                audit.info(f"user={request.user.id}|username={request.user.username}|problem={problem_ref}|contest={contest.id}|ip={request.ip}|ua={ua}")
         problem = self.get_problem(problem_ref, contest=contest)
         if not problem:
             return self.error("Problem does not exist")
@@ -388,3 +408,10 @@ class PluginTestCaseDownloadAPI(APIView, ContestAccessMixin, DLTestCaseZipProces
         response["Content-Disposition"] = f"attachment; filename=problem_{problem.id}_test_cases.zip"
         response["Content-Length"] = os.path.getsize(file_name)
         return response
+class PluginVersionAPI(APIView):
+    def get(self, request):
+        return self.success({
+            "version": "0.0.94",
+            "download_url": "https://github.com/AndyLishengrui/xmuoj/releases/download/v0.0.94/xmuoj-vscode-0.0.94.vsix",
+            "release_notes": "考试模式：Admin 可设置比赛为考试模式，禁止插件下载测试数据\n自动更新检测",
+        })

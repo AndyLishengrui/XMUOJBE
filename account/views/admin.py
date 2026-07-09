@@ -15,7 +15,7 @@ from utils.shortcuts import rand_str
 from ..decorators import super_admin_required
 from ..models import AdminType, ProblemPermission, User, UserProfile
 from ..serializers import EditUserSerializer, UserAdminSerializer, GenerateUserSerializer, ChangeUserpasswordSerializer
-from ..serializers import ImportUserSeralizer
+from ..serializers import ImportUserSeralizer, BatchResetPasswordSerializer
 
 
 class UserAdminAPI(APIView):
@@ -263,3 +263,32 @@ class ChangeUserpasswordAPI(APIView):
                 return self.success()
             except IntegrityError as e:
                 return self.error(str(e).split("\n")[1])
+
+
+class BatchResetPasswordAPI(APIView):
+    @validate_serializer(BatchResetPasswordSerializer)
+    @super_admin_required
+    def post(self, request):
+        """
+        远程批量重置密码: 给定学号列表 + 固定密码
+        POST /api/admin/batch_reset_password/
+        body: {"users": ["学号1","学号2",...], "password": "新密码"}
+        """
+        data = request.data
+        usernames = data["users"]
+        new_password = data["password"]
+
+        ok = 0
+        missing = []
+
+        for username in usernames:
+            try:
+                user = User.objects.get(username=username)
+                user.set_password(new_password)
+                user.save()
+                ok += 1
+            except User.DoesNotExist:
+                missing.append(username)
+
+        result = {"updated": ok, "missing": missing}
+        return self.success(result)

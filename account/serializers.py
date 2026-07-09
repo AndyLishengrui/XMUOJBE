@@ -53,6 +53,13 @@ class ImportUserSeralizer(serializers.Serializer):
         child=serializers.ListField(child=serializers.CharField(max_length=64)))
 
 
+class BatchResetPasswordSerializer(serializers.Serializer):
+    users = serializers.ListField(
+        child=serializers.CharField(max_length=64),
+        help_text="学号列表")
+    password = serializers.CharField(min_length=1, max_length=64)
+
+
 class UserAdminSerializer(serializers.ModelSerializer):
     real_name = serializers.SerializerMethodField()
     school = serializers.SerializerMethodField()

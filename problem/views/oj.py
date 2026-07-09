@@ -133,8 +133,30 @@ class ContestProblemAPI(APIView):
                     status = submission_status_map.get(problem["id"])
                 problem["my_status"] = status
 
+    def _check_exam_throttle(self, request):
+        if self.contest.is_exam and not request.user.is_contest_admin(self.contest):
+            from utils.cache import cache
+            from utils.throttling import TokenBucket
+            bucket = TokenBucket(
+                key=f"exam_view:{request.user.id}:{self.contest.id}",
+                redis_conn=cache, capacity=10, fill_rate=0.2, default_capacity=10
+            )
+            can, wait = bucket.consume()
+            if not can:
+                return self.error(f"请求太频繁，请等待 {int(wait)} 秒")
+            import logging
+            logging.getLogger("exam_audit").info(
+                f"user={request.user.id}|username={request.user.username}|"
+                f"contest={self.contest.id}|ip={request.ip}|"
+                f"ua={request.META.get('HTTP_USER_AGENT','')[:80]}"
+            )
+        return None
+
     @check_contest_permission(check_type="problems")
     def get(self, request):
+        err = self._check_exam_throttle(request)
+        if err:
+            return err
         problem_id = request.GET.get("problem_id")
         if problem_id:
             try:
