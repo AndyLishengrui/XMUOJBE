@@ -10,6 +10,7 @@ from .views import (
     PluginProblemWorkspaceAPI,
     PluginSubmissionAPI,
     PluginTestCaseDownloadAPI,
+    PluginVersionAPI,
 )
 
 urlpatterns = [
@@ -21,5 +22,6 @@ urlpatterns = [
     url(r"^problemset/?$", PluginProblemsetAPI.as_view(), name="plugin_problemset_api"),
     url(r"^problem_workspace/?$", PluginProblemWorkspaceAPI.as_view(), name="plugin_problem_workspace_api"),
     url(r"^submission/?$", PluginSubmissionAPI.as_view(), name="plugin_submission_api"),
+    url(r"^version/?$", PluginVersionAPI.as_view(), name="plugin_version_api"),
     url(r"^test_case_download/?$", PluginTestCaseDownloadAPI.as_view(), name="plugin_test_case_download_api"),
 ]
