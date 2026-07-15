@@ -50,6 +50,8 @@ def img2base64(img):
 
 
 def datetime2str(value, format="iso-8601"):
+    if value is None or value == "":
+        return ""
     if format.lower() == "iso-8601":
         value = value.isoformat()
         if value.endswith("+00:00"):

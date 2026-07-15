@@ -5,7 +5,7 @@ from utils.serializers import LanguageNameChoiceField
 
 class CreateSubmissionSerializer(serializers.Serializer):
     problem_id = serializers.IntegerField()
-    language = LanguageNameChoiceField()
+    language = LanguageNameChoiceField(visible_only=True)
     code = serializers.CharField(max_length=1024 * 1024)
     contest_id = serializers.IntegerField(required=False)
     captcha = serializers.CharField(required=False)
@@ -17,10 +17,17 @@ class ShareSubmissionSerializer(serializers.Serializer):
 
 
 class SubmissionModelSerializer(serializers.ModelSerializer):
+    problem = serializers.SlugRelatedField(read_only=True, slug_field="_id")
+    contest_is_exam = serializers.SerializerMethodField()
 
     class Meta:
         model = Submission
         fields = "__all__"
+
+    def get_contest_is_exam(self, obj):
+        if obj.contest_id:
+            return obj.contest.is_exam
+        return False
 
 
 # 不显示submission info的serializer, 用于ACM rule_type

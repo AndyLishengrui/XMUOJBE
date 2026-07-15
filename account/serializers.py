@@ -87,6 +87,9 @@ class UserProfileSerializer(serializers.ModelSerializer):
     user = UserSerializer()
     real_name = serializers.SerializerMethodField()
     school = serializers.SerializerMethodField()
+    accepted_number = serializers.SerializerMethodField()
+    submission_number = serializers.SerializerMethodField()
+    total_score = serializers.SerializerMethodField()
 
     class Meta:
         model = UserProfile
@@ -101,6 +104,35 @@ class UserProfileSerializer(serializers.ModelSerializer):
     
     def get_school(self, obj):
         return obj.school
+
+
+    def get_accepted_number(self, obj):
+        count = obj.accepted_number
+        acm = obj.acm_problems_status or {}
+        oi = obj.oi_problems_status or {}
+        for container in [acm, oi]:
+            cps = container.get("contest_problems", {}) or {}
+            for pid, info in cps.items():
+                if isinstance(info, dict) and info.get("status") == 0:
+                    count += 1
+        return count
+
+    def get_submission_number(self, obj):
+        from contest.models import OIContestRank, ACMContestRank
+        contest_sub = 0
+        for model in [OIContestRank, ACMContestRank]:
+            ranks = model.objects.filter(user=obj.user)
+            for r in ranks:
+                contest_sub += r.submission_number or 0
+        return obj.submission_number + contest_sub
+
+    def get_total_score(self, obj):
+        from contest.models import OIContestRank
+        score = obj.total_score
+        ranks = OIContestRank.objects.filter(user=obj.user)
+        for r in ranks:
+            score += r.total_score or 0
+        return score
 
 
 class EditUserSerializer(serializers.Serializer):
@@ -157,7 +189,42 @@ class FileUploadForm(forms.Form):
 
 class RankInfoSerializer(serializers.ModelSerializer):
     user = UsernameSerializer()
+    accepted_number = serializers.SerializerMethodField()
+    submission_number = serializers.SerializerMethodField()
+    total_score = serializers.SerializerMethodField()
+    real_name = serializers.SerializerMethodField()
 
     class Meta:
         model = UserProfile
         fields = "__all__"
+
+
+    def get_accepted_number(self, obj):
+        count = obj.accepted_number
+        acm = obj.acm_problems_status or {}
+        oi = obj.oi_problems_status or {}
+        for container in [acm, oi]:
+            cps = container.get("contest_problems", {}) or {}
+            for pid, info in cps.items():
+                if isinstance(info, dict) and info.get("status") == 0:
+                    count += 1
+        return count
+
+    def get_submission_number(self, obj):
+        from contest.models import OIContestRank, ACMContestRank
+        contest_sub = 0
+        for model in [OIContestRank, ACMContestRank]:
+            for r in model.objects.filter(user=obj.user):
+                contest_sub += r.submission_number or 0
+        return obj.submission_number + contest_sub
+
+    def get_real_name(self, obj):
+        show = self.context.get("is_admin", False)
+        return obj.real_name if show else None
+
+    def get_total_score(self, obj):
+        from contest.models import OIContestRank
+        score = obj.total_score
+        for r in OIContestRank.objects.filter(user=obj.user):
+            score += r.total_score or 0
+        return score

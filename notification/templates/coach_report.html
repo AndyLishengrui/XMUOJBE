@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }}</title>
+{% if page_url %}<link rel="canonical" href="{{ page_url }}">{% endif %}
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         background: #f5f6fa; color: #333; line-height: 1.6; padding: 20px; }
+  .container { max-width: 800px; margin: 0 auto; }
+  .card { background: #fff; border-radius: 8px; padding: 24px; margin-bottom: 16px;
+          box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  .card h2 { color: #2d8cf0; margin-bottom: 12px; font-size: 18px; border-bottom: 2px solid #e8eaec; padding-bottom: 8px; }
+  .card h3 { color: #2d8cf0; margin: 16px 0 8px; font-size: 16px; }
+  .meta { color: #999; font-size: 13px; margin-bottom: 16px; }
+  pre { background: #f7f8fa; border-radius: 6px; padding: 16px; overflow-x: auto;
+        font-size: 13px; line-height: 1.5; border: 1px solid #e8eaec; white-space: pre-wrap; word-break: break-all; }
+  .btn { display: inline-block; padding: 8px 20px; background: #2d8cf0; color: #fff;
+         text-decoration: none; border-radius: 4px; font-size: 14px; margin-right: 8px; margin-top: 12px; }
+  .btn-outline { background: #fff; color: #2d8cf0; border: 1px solid #2d8cf0; }
+  .btn:hover { opacity: 0.85; }
+  .section { margin-bottom: 12px; }
+  .highlight { background: #fff7e6; border-left: 3px solid #f90; padding: 8px 12px; margin: 8px 0; border-radius: 0 4px 4px 0; }
+  .empty { color: #999; font-style: italic; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="card">
+    <h2>{{ title }}</h2>
+    <div class="meta">
+      发送者: {{ sender_name }} &nbsp;|&nbsp; 时间: {{ create_time }}
+    </div>
+    <div class="content">
+      {{ content_html|safe }}
+    </div>
+    <div style="margin-top:20px">
+      <a href="{{ problem_link }}" class="btn" target="_blank">📝 查看题目</a>
+      {% if submission_links %}
+        {% for sub in submission_links %}
+        <a href="{{ sub.url }}" class="btn btn-outline" target="_blank">📤 查看提交 ({{ sub.user }})</a>
+        {% endfor %}
+      {% endif %}
+    </div>
+
+    <div id="coach-feedback" style="margin-top:16px;padding-top:12px;border-top:1px solid #e8eaec">
+      <span style="font-size:13px;color:#999">这个分析有帮助吗？</span>
+      <button id="fb-like" onclick="submitFeedback('like')" style="padding:4px 14px;margin:0 4px;border:1px solid #ddd;border-radius:4px;background:#fff;cursor:pointer;font-size:13px">👍 有帮助</button>
+      <button id="fb-dislike" onclick="submitFeedback('dislike')" style="padding:4px 14px;margin:0 4px;border:1px solid #ddd;border-radius:4px;background:#fff;cursor:pointer;font-size:13px">👎 有错误</button>
+      <span id="fb-msg" style="font-size:12px;color:#19be6b;margin-left:8px;display:none"></span>
+    </div>
+    <script>
+    var fbSubmitted = false;
+    var FB_USER = '{{ recipient_username }}';
+    var FB_PID = '{{ coach_problem_id }}';
+    function submitFeedback(type) {
+      if (fbSubmitted) return;
+      fbSubmitted = true;
+      fetch('/coach/reports/' + FB_USER + '/' + FB_PID + '/feedback', {
+        method: 'POST', credentials: 'include',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({feedback: type})
+      })
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if (d && d.ok) showMsg(type==='like'?'感谢反馈！':'感谢反馈，我们会改进！');
+        else { fbSubmitted = false; showMsg('反馈失败'); }
+      })
+      .catch(function(){ fbSubmitted = false; showMsg('反馈失败，请重试'); });
+    }
+    function showMsg(msg) {
+      var el = document.getElementById('fb-msg');
+      el.textContent = msg;
+      el.style.display = 'inline';
+      document.getElementById('fb-like').disabled = true;
+      document.getElementById('fb-dislike').disabled = true;
+    }
+    </script>
+
+  </div>
+</div>
+</body>
+</html>

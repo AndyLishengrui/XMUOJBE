@@ -358,9 +358,9 @@ class SessionManagementAPI(APIView):
             s = {}
             if current_session == key:
                 s["current_session"] = True
-            s["ip"] = session["ip"]
-            s["user_agent"] = session["user_agent"]
-            s["last_activity"] = datetime2str(session["last_activity"])
+            s["ip"] = session.get("ip", "")
+            s["user_agent"] = session.get("user_agent", "")
+            s["last_activity"] = datetime2str(session.get("last_activity"))
             s["session_key"] = key
             result.append(s)
         if modified:
@@ -386,13 +386,74 @@ class UserRankAPI(APIView):
         rule_type = request.GET.get("rule")
         if rule_type not in ContestRuleType.choices():
             rule_type = ContestRuleType.ACM
-        profiles = UserProfile.objects.filter(user__admin_type=AdminType.REGULAR_USER, user__is_disabled=False) \
-            .select_related("user")
+        profiles = UserProfile.objects.filter(
+            user__admin_type=AdminType.REGULAR_USER, user__is_disabled=False
+        ).select_related("user")
+
+        # Prefetch contest rank data for all users
+        from contest.models import OIContestRank, ACMContestRank
+        all_profiles = list(profiles)
+        user_ids = [p.user_id for p in all_profiles]
+        oi_ranks = OIContestRank.objects.filter(user_id__in=user_ids)
+        acm_ranks = ACMContestRank.objects.filter(user_id__in=user_ids)
+
+        oi_by_user = {}
+        for r in oi_ranks:
+            uid = r.user_id
+            if uid not in oi_by_user:
+                oi_by_user[uid] = {'score': 0, 'submission': 0}
+            oi_by_user[uid]['score'] += r.total_score or 0
+            oi_by_user[uid]['submission'] += r.submission_number or 0
+
+        acm_by_user = {}
+        for r in acm_ranks:
+            uid = r.user_id
+            if uid not in acm_by_user:
+                acm_by_user[uid] = {'ac': 0, 'submission': 0}
+            acm_by_user[uid]['submission'] += r.submission_number or 0
+
+        # Compute combined scores (public + contest)
+        for p in all_profiles:
+            uid = p.user_id
+            oi_data = oi_by_user.get(uid, {'score': 0, 'submission': 0})
+            acm_data = acm_by_user.get(uid, {'submission': 0})
+            p._combined_score = p.total_score + oi_data['score']
+            p._combined_submission = p.submission_number + oi_data['submission'] + acm_data['submission']
+
+            # AC count from JSON (most accurate per-problem AC tracking)
+            acm = p.acm_problems_status or {}
+            oi = p.oi_problems_status or {}
+            contest_ac = 0
+            for container in [acm, oi]:
+                cps = container.get("contest_problems", {}) or {}
+                contest_ac += sum(
+                    1 for info in cps.values()
+                    if isinstance(info, dict) and info.get("status") == 0
+                )
+            p._combined_ac = p.accepted_number + contest_ac
+
         if rule_type == ContestRuleType.ACM:
-            profiles = profiles.filter(submission_number__gt=0).order_by("-accepted_number", "submission_number")
+            all_profiles = [p for p in all_profiles if p._combined_ac > 0 or p.submission_number > 0]
+            all_profiles.sort(key=lambda p: (p._combined_ac, -p._combined_submission), reverse=True)
         else:
-            profiles = profiles.filter(total_score__gt=0).order_by("-total_score")
-        return self.success(self.paginate_data(request, profiles, RankInfoSerializer))
+            all_profiles = [p for p in all_profiles if p._combined_score > 0]
+            all_profiles.sort(key=lambda p: p._combined_score, reverse=True)
+
+        # Manually paginate since we have a list (not queryset)
+        try:
+            limit = int(request.GET.get("limit", "20"))
+            offset = int(request.GET.get("offset", "0"))
+        except ValueError:
+            limit, offset = 20, 0
+        total = len(all_profiles)
+        page = all_profiles[offset:offset + limit]
+        is_admin = request.user.is_authenticated and request.user.is_admin_role()
+        data = {
+            "results": RankInfoSerializer(page, many=True, context={"is_admin": is_admin}).data,
+            "total": total,
+            "is_admin": is_admin
+        }
+        return self.success(data)
 
 
 class ProfileProblemDisplayIDRefreshAPI(APIView):
@@ -405,20 +466,22 @@ class ProfileProblemDisplayIDRefreshAPI(APIView):
         oi_root = profile.oi_problems_status or {}
         acm_problems = acm_root.get("problems", {}) or {}
         oi_problems = oi_root.get("problems", {}) or {}
+        acm_contest = acm_root.get("contest_problems", {}) or {}
+        oi_contest = oi_root.get("contest_problems", {}) or {}
 
+        # --- public problems (non-contest) ---
         ids = []
         ids.extend([str(i) for i in acm_problems.keys()])
         ids.extend([str(i) for i in oi_problems.keys()])
 
-        if not ids:
-            return self.success({"removed": 0, "accepted_number": profile.accepted_number, "total_score": profile.total_score})
-
-        valid_rows = Problem.objects.filter(
-            id__in=ids,
-            contest_id__isnull=True,
-            visible=True
-        ).values("id", "_id")
-        valid_map = {str(row["id"]): row["_id"] for row in valid_rows}
+        valid_map = {}
+        if ids:
+            valid_rows = Problem.objects.filter(
+                id__in=ids,
+                contest_id__isnull=True,
+                visible=True
+            ).values("id", "_id")
+            valid_map = {str(row["id"]): row["_id"] for row in valid_rows}
 
         new_acm = {}
         for pid, item in acm_problems.items():
@@ -441,15 +504,53 @@ class ProfileProblemDisplayIDRefreshAPI(APIView):
             new_item["score"] = int(new_item.get("score", 0) or 0)
             new_oi[spid] = new_item
 
+        # --- contest/experiment problems ---
+        contest_ids = []
+        contest_ids.extend([str(i) for i in acm_contest.keys()])
+        contest_ids.extend([str(i) for i in oi_contest.keys()])
+
+        contest_valid_map = {}
+        if contest_ids:
+            contest_rows = Problem.objects.filter(
+                id__in=contest_ids,
+                visible=True
+            ).values("id", "_id")
+            contest_valid_map = {str(row["id"]): row["_id"] for row in contest_rows}
+
+        new_acm_contest = {}
+        for pid, item in acm_contest.items():
+            spid = str(pid)
+            display_id = contest_valid_map.get(spid)
+            if not display_id or not isinstance(item, dict):
+                continue
+            new_item = dict(item)
+            new_item["_id"] = display_id
+            new_acm_contest[spid] = new_item
+
+        new_oi_contest = {}
+        for pid, item in oi_contest.items():
+            spid = str(pid)
+            display_id = contest_valid_map.get(spid)
+            if not display_id or not isinstance(item, dict):
+                continue
+            new_item = dict(item)
+            new_item["_id"] = display_id
+            new_item["score"] = int(new_item.get("score", 0) or 0)
+            new_oi_contest[spid] = new_item
+
         acm_accepted = sum(1 for item in new_acm.values() if item.get("status") == JudgeStatus.ACCEPTED)
         oi_accepted = sum(1 for item in new_oi.values() if item.get("status") == JudgeStatus.ACCEPTED)
         total_score = sum(item.get("score", 0) for item in new_oi.values())
 
         old_count = len(acm_problems) + len(oi_problems)
         new_count = len(new_acm) + len(new_oi)
+        old_contest_count = len(acm_contest) + len(oi_contest)
+        new_contest_count = len(new_acm_contest) + len(new_oi_contest)
 
         acm_root["problems"] = new_acm
         oi_root["problems"] = new_oi
+        acm_root["contest_problems"] = new_acm_contest
+        oi_root["contest_problems"] = new_oi_contest
         profile.acm_problems_status = acm_root
         profile.oi_problems_status = oi_root
         profile.accepted_number = acm_accepted + oi_accepted
@@ -458,6 +559,7 @@ class ProfileProblemDisplayIDRefreshAPI(APIView):
 
         return self.success({
             "removed": max(old_count - new_count, 0),
+            "contest_removed": max(old_contest_count - new_contest_count, 0),
             "accepted_number": profile.accepted_number,
             "total_score": profile.total_score
         })
@@ -894,4 +996,8 @@ class SSOAPI(CSRFExemptAPIView):
             user = User.objects.get(auth_token=request.data["token"])
         except User.DoesNotExist:
             return self.error("User does not exist")
-        return self.success({"username": user.username, "avatar": user.userprofile.avatar, "admin_type": user.admin_type})
+        try:
+            avatar = user.userprofile.avatar
+        except UserProfile.DoesNotExist:
+            avatar = ""
+        return self.success({"username": user.username, "avatar": avatar, "admin_type": user.admin_type})
