@@ -60,6 +60,11 @@ class BatchResetPasswordSerializer(serializers.Serializer):
     password = serializers.CharField(min_length=1, max_length=64)
 
 
+class ResetUserPasswordSerializer(serializers.Serializer):
+    user_id = serializers.IntegerField()
+    new_password = serializers.CharField(min_length=6, max_length=64)
+
+
 class UserAdminSerializer(serializers.ModelSerializer):
     real_name = serializers.SerializerMethodField()
     school = serializers.SerializerMethodField()

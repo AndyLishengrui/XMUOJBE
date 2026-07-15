@@ -12,10 +12,10 @@ from submission.models import Submission
 from utils.api import APIView, validate_serializer
 from utils.shortcuts import rand_str
 
-from ..decorators import super_admin_required
+from ..decorators import super_admin_required, admin_role_required
 from ..models import AdminType, ProblemPermission, User, UserProfile
 from ..serializers import EditUserSerializer, UserAdminSerializer, GenerateUserSerializer, ChangeUserpasswordSerializer
-from ..serializers import ImportUserSeralizer, BatchResetPasswordSerializer
+from ..serializers import ImportUserSeralizer, BatchResetPasswordSerializer, ResetUserPasswordSerializer
 
 
 class UserAdminAPI(APIView):
@@ -128,7 +128,7 @@ class UserAdminAPI(APIView):
         UserProfile.objects.filter(user=user).update(real_name=data["real_name"])
         return self.success(UserAdminSerializer(user).data)
 
-    @super_admin_required
+    @admin_role_required
     def get(self, request):
         """
         User list api / Get user by id
@@ -139,9 +139,16 @@ class UserAdminAPI(APIView):
                 user = User.objects.get(id=user_id)
             except User.DoesNotExist:
                 return self.error("User does not exist")
+            # Prevent non-super-admin from fetching a Super Admin's details
+            if not request.user.is_super_admin() and user.is_super_admin():
+                return self.error("User does not exist")
             return self.success(UserAdminSerializer(user).data)
 
         user = User.objects.all().order_by("-create_time")
+
+        # Hide Super Admin accounts from Admin (non-Super-Admin) users
+        if not request.user.is_super_admin():
+            user = user.exclude(admin_type=AdminType.SUPER_ADMIN)
 
         keyword = request.GET.get("keyword", None)
         if keyword:
@@ -292,3 +299,27 @@ class BatchResetPasswordAPI(APIView):
 
         result = {"updated": ok, "missing": missing}
         return self.success(result)
+
+
+class ResetUserPasswordAPI(APIView):
+    @validate_serializer(ResetUserPasswordSerializer)
+    @admin_role_required
+    def post(self, request):
+        """
+        Reset a user's password.
+        Super Admin: can reset any user's password.
+        Admin: can only reset Regular User passwords (not Admin or Super Admin).
+        """
+        data = request.data
+        try:
+            user = User.objects.get(id=data["user_id"])
+        except User.DoesNotExist:
+            return self.error("User does not exist")
+
+        # Admin (non-super-admin) cannot reset passwords of admin-role users
+        if not request.user.is_super_admin() and user.is_admin_role():
+            return self.error("You do not have permission to reset this user's password")
+
+        user.set_password(data["new_password"])
+        user.save()
+        return self.success()
