@@ -9,7 +9,7 @@ from django.db.models import F
 
 from account.models import User
 from conf.models import JudgeServer
-from contest.models import ContestRuleType, ACMContestRank, OIContestRank, ContestStatus, ContestParticipation
+from contest.models import ContestRuleType, ACMContestRank, OIContestRank, ContestStatus
 from options.options import SysOptions
 from problem.models import Problem, ProblemRuleType
 from problem.utils import parse_problem_template
@@ -17,11 +17,11 @@ from submission.models import JudgeStatus, Submission
 from utils.cache import cache
 from utils.constants import CacheKey
 
-# from googletrans import Translator
-# import re
+from googletrans import Translator
+import re
 
 logger = logging.getLogger(__name__)
-"""
+
 def GoogleTranslate(msg):
     translator = Translator(service_urls=['translate.google.cn'])
     # 逐句翻译
@@ -59,7 +59,7 @@ def GoogleTranslate(msg):
             trans += result + '\n'
 
     return trans
-"""
+
         
 # 继续处理在队列中的问题
 def process_pending_task():
@@ -150,17 +150,14 @@ class JudgeDispatcher(DispatcherBase):
         # sum up the score in OI mode
         if self.problem.rule_type == ProblemRuleType.OI:
             score = 0
-            try:
-                for i in range(len(resp_data)):
-                    if resp_data[i]["result"] == JudgeStatus.ACCEPTED:
-                        resp_data[i]["score"] = self.problem.test_case_score[i]["score"]
-                        score += resp_data[i]["score"]
-                    else:
-                        resp_data[i]["score"] = 0
-            except IndexError:
-                logger.error(f"Index Error raised when summing up the score in problem {self.problem.id}")
-                self.submission.statistic_info["score"] = 0
-                return
+            tcs = self.problem.test_case_score or []
+            for i in range(len(resp_data)):
+                if resp_data[i]["result"] == JudgeStatus.ACCEPTED:
+                    if i < len(tcs):
+                        score += tcs[i].get("score", 0)
+                    resp_data[i]["score"] = tcs[i].get("score", 0) if i < len(tcs) else 0
+                else:
+                    resp_data[i]["score"] = 0
             self.submission.statistic_info["score"] = score
 
     def judge(self):
@@ -195,9 +192,13 @@ class JudgeDispatcher(DispatcherBase):
 
         with ChooseJudgeServer() as server:
             if not server:
-                data = {"submission_id": self.submission.id, "problem_id": self.problem.id}
-                cache.lpush(CacheKey.waiting_queue, json.dumps(data))
-                return
+                # 评测机繁忙，等待 1s 重试一次
+                import time as _time
+                _time.sleep(1)
+                with ChooseJudgeServer() as server2:
+                    if not server2:
+                        return
+                    server = server2
             Submission.objects.filter(id=self.submission.id).update(result=JudgeStatus.JUDGING)
             resp = self._request(urljoin(server.service_url, "/judge"), data=data)
 
@@ -208,7 +209,10 @@ class JudgeDispatcher(DispatcherBase):
         if resp["err"]:
             self.submission.result = JudgeStatus.COMPILE_ERROR
             self.submission.statistic_info["err_info"] = resp["data"]
-            # self.submission.statistic_info["err_info_cn"] = GoogleTranslate(resp["data"])
+            try:
+                self.submission.statistic_info["err_info_cn"] = GoogleTranslate(resp["data"])
+            except Exception:
+                self.submission.statistic_info["err_info_cn"] = resp["data"]
             self.submission.statistic_info["score"] = 0
         else:
             resp["data"].sort(key=lambda x: int(x["test_case"]))
@@ -393,22 +397,6 @@ class JudgeDispatcher(DispatcherBase):
             except IntegrityError:
                 rank = get_rank(model)
         func(rank)
-        if self.contest.rule_type == ContestRuleType.ACM:
-            ContestParticipation.sync_from_rank(
-                user_id=self.submission.user_id,
-                contest=self.contest,
-                submission_number=rank.submission_number,
-                accepted_number=rank.accepted_number,
-                total_score=0
-            )
-        else:
-            ContestParticipation.sync_from_rank(
-                user_id=self.submission.user_id,
-                contest=self.contest,
-                submission_number=rank.submission_number,
-                accepted_number=0,
-                total_score=rank.total_score
-            )
 
     def _update_acm_contest_rank(self, rank):
         info = rank.submission_info.get(str(self.submission.problem_id))
@@ -458,4 +446,5 @@ class JudgeDispatcher(DispatcherBase):
         else:
             rank.total_score = rank.total_score + current_score
         rank.submission_info[problem_id] = current_score
+        rank.submission_number += 1
         rank.save()

@@ -894,6 +894,18 @@ class UserContestDetailAPI(APIView):
                         .values("id", "_id", "title")
                         .order_by("_id"))
 
+        # Pre-query ACCEPTED submissions for defense-in-depth:
+        # when rank.submission_info has score=0 (due to historical tcs mismatch),
+        # fall back to the actual submission result.
+        accepted_pids = set()
+        if contest.rule_type == ContestRuleType.OI:
+            accepted_pids = set(
+                Submission.objects.filter(
+                    user_id=target_user.id, contest_id=contest.id,
+                    result=JudgeStatus.ACCEPTED
+                ).values_list("problem_id", flat=True)
+            )
+
         problem_items = []
         for problem in problems:
             info = submission_info.get(str(problem["id"]))
@@ -913,7 +925,7 @@ class UserContestDetailAPI(APIView):
             else:
                 # info = score (int) or None
                 best_score = info if info is not None else 0
-                is_ac = best_score > 0
+                is_ac = (best_score > 0) or (problem["id"] in accepted_pids)
                 problem_items.append({
                     "display_id": problem["_id"],
                     "title": problem["title"],
