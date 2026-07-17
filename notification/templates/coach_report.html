@@ -8,22 +8,43 @@
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-         background: #f5f6fa; color: #333; line-height: 1.6; padding: 20px; }
-  .container { max-width: 800px; margin: 0 auto; }
-  .card { background: #fff; border-radius: 8px; padding: 24px; margin-bottom: 16px;
-          box-shadow: 0 1px 3px rgba(0,0,0,.1); }
-  .card h2 { color: #2d8cf0; margin-bottom: 12px; font-size: 18px; border-bottom: 2px solid #e8eaec; padding-bottom: 8px; }
-  .card h3 { color: #2d8cf0; margin: 16px 0 8px; font-size: 16px; }
-  .meta { color: #999; font-size: 13px; margin-bottom: 16px; }
+         background: #f0f2f5; color: #333; line-height: 1.6; padding: 20px; }
+  .container { max-width: 860px; margin: 0 auto; }
+  .card { background: #fff; border-radius: 10px; padding: 28px; margin-bottom: 16px;
+          box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .card h2 { color: #1a1a2e; margin-bottom: 12px; font-size: 20px; border-bottom: 2px solid #e8eaec; padding-bottom: 10px; }
+  .card h3 { color: #2d8cf0; margin: 18px 0 8px; font-size: 16px; }
+  .meta { color: #999; font-size: 13px; margin-bottom: 18px; }
+  .content { font-size: 15px; line-height: 1.8; color: #333; }
+  .content p { margin-bottom: 10px; }
+  .content strong { color: #1a1a2e; }
+  .content h2 { font-size: 18px; color: #1a1a2e; border-bottom: 1px solid #eee; padding-bottom: 6px; margin-top: 20px; }
+  .content h3 { font-size: 16px; color: #2d8cf0; margin-top: 16px; }
+  .content hr { border: none; border-top: 1px solid #e8eaec; margin: 16px 0; }
   pre { background: #f7f8fa; border-radius: 6px; padding: 16px; overflow-x: auto;
-        font-size: 13px; line-height: 1.5; border: 1px solid #e8eaec; white-space: pre-wrap; word-break: break-all; }
-  .btn { display: inline-block; padding: 8px 20px; background: #2d8cf0; color: #fff;
-         text-decoration: none; border-radius: 4px; font-size: 14px; margin-right: 8px; margin-top: 12px; }
-  .btn-outline { background: #fff; color: #2d8cf0; border: 1px solid #2d8cf0; }
+        font-size: 14px; line-height: 1.6; border: 1px solid #e8eaec; white-space: pre-wrap; word-break: break-all; }
+  .btn { display: inline-block; padding: 10px 22px; background: #2d8cf0; color: #fff;
+         text-decoration: none; border-radius: 6px; font-size: 14px; margin-right: 8px; margin-top: 14px;
+         font-weight: 500; transition: opacity .2s; }
   .btn:hover { opacity: 0.85; }
+  .btn-danger { background: #e94560; }
+  .btn-outline { background: #fff; color: #2d8cf0; border: 1px solid #2d8cf0; }
   .section { margin-bottom: 12px; }
   .highlight { background: #fff7e6; border-left: 3px solid #f90; padding: 8px 12px; margin: 8px 0; border-radius: 0 4px 4px 0; }
   .empty { color: #999; font-style: italic; }
+
+  /* Feedback section - prominent */
+  .feedback-section { margin-top: 24px; padding-top: 18px; border-top: 2px solid #e8eaec; }
+  .feedback-section .prompt { font-size: 15px; color: #555; margin-bottom: 12px; font-weight: 500; }
+  .feedback-section .fb-buttons { display: flex; gap: 10px; flex-wrap: wrap; }
+  .fb-btn { padding: 10px 24px; border: 2px solid #d9d9d9; border-radius: 8px; background: #fff;
+            cursor: pointer; font-size: 15px; transition: all .2s;
+            display: inline-flex; align-items: center; gap: 6px; }
+  .fb-btn:hover { border-color: #2d8cf0; background: #f0f5ff; }
+  .fb-btn:disabled { opacity: .5; cursor: not-allowed; }
+  .fb-btn.like-btn:hover { border-color: #19be6b; background: #e8f8ee; }
+  .fb-btn.dislike-btn:hover { border-color: #ed4014; background: #fde8e4; }
+  .fb-msg { font-size: 14px; color: #19be6b; margin-left: 12px; display: none; font-weight: 500; }
 </style>
 </head>
 <body>
@@ -36,20 +57,25 @@
     <div class="content">
       {{ content_html|safe }}
     </div>
-    <div style="margin-top:20px">
+    <div style="margin-top:24px; display:flex; flex-wrap:wrap; gap:8px;">
+      {% if problem_link %}
       <a href="{{ problem_link }}" class="btn" target="_blank">📝 查看题目</a>
+      {% endif %}
       {% if submission_links %}
         {% for sub in submission_links %}
-        <a href="{{ sub.url }}" class="btn btn-outline" target="_blank">📤 查看提交 ({{ sub.user }})</a>
+        <a href="{{ sub.url }}" class="btn btn-danger" target="_blank">📤 查看提交 ({{ sub.user }})</a>
         {% endfor %}
       {% endif %}
     </div>
 
-    <div id="coach-feedback" style="margin-top:16px;padding-top:12px;border-top:1px solid #e8eaec">
-      <span style="font-size:13px;color:#999">这个分析有帮助吗？</span>
-      <button id="fb-like" onclick="submitFeedback('like')" style="padding:4px 14px;margin:0 4px;border:1px solid #ddd;border-radius:4px;background:#fff;cursor:pointer;font-size:13px">👍 有帮助</button>
-      <button id="fb-dislike" onclick="submitFeedback('dislike')" style="padding:4px 14px;margin:0 4px;border:1px solid #ddd;border-radius:4px;background:#fff;cursor:pointer;font-size:13px">👎 有错误</button>
-      <span id="fb-msg" style="font-size:12px;color:#19be6b;margin-left:8px;display:none"></span>
+    <!-- Feedback Section -->
+    <div class="feedback-section">
+      <div class="prompt">💬 这个分析对你有帮助吗？</div>
+      <div class="fb-buttons">
+        <button id="fb-like" class="fb-btn like-btn" onclick="submitFeedback('like')">👍 有帮助</button>
+        <button id="fb-dislike" class="fb-btn dislike-btn" onclick="submitFeedback('dislike')">👎 有错误</button>
+        <span id="fb-msg" class="fb-msg"></span>
+      </div>
     </div>
     <script>
     var fbSubmitted = false;
@@ -58,6 +84,10 @@
     function submitFeedback(type) {
       if (fbSubmitted) return;
       fbSubmitted = true;
+      var likeBtn = document.getElementById('fb-like');
+      var dislikeBtn = document.getElementById('fb-dislike');
+      likeBtn.disabled = true;
+      dislikeBtn.disabled = true;
       fetch('/coach/reports/' + FB_USER + '/' + FB_PID + '/feedback', {
         method: 'POST', credentials: 'include',
         headers: {'Content-Type': 'application/json'},
@@ -65,20 +95,30 @@
       })
       .then(function(r){ return r.json(); })
       .then(function(d){
-        if (d && d.ok) showMsg(type==='like'?'感谢反馈！':'感谢反馈，我们会改进！');
-        else { fbSubmitted = false; showMsg('反馈失败'); }
+        var msg = document.getElementById('fb-msg');
+        if (d && d.ok) {
+          msg.textContent = type === 'like' ? '✓ 感谢反馈！' : '✓ 感谢反馈，我们会改进！';
+          msg.style.color = '#19be6b';
+        } else {
+          fbSubmitted = false;
+          likeBtn.disabled = false;
+          dislikeBtn.disabled = false;
+          msg.textContent = '反馈失败，请重试';
+          msg.style.color = '#ed4014';
+        }
+        msg.style.display = 'inline';
       })
-      .catch(function(){ fbSubmitted = false; showMsg('反馈失败，请重试'); });
-    }
-    function showMsg(msg) {
-      var el = document.getElementById('fb-msg');
-      el.textContent = msg;
-      el.style.display = 'inline';
-      document.getElementById('fb-like').disabled = true;
-      document.getElementById('fb-dislike').disabled = true;
+      .catch(function(){
+        fbSubmitted = false;
+        likeBtn.disabled = false;
+        dislikeBtn.disabled = false;
+        var msg = document.getElementById('fb-msg');
+        msg.textContent = '反馈失败，请重试';
+        msg.style.color = '#ed4014';
+        msg.style.display = 'inline';
+      });
     }
     </script>
-
   </div>
 </div>
 </body>

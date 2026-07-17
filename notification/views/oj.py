@@ -124,7 +124,7 @@ class NotificationDetailView(APIView):
         try:
             notification = Notification.objects.select_related(
                 'sender', 'sender__userprofile'
-            ).get(id=notification_id, is_deleted=False) if request.user.is_admin_role() else Notification.objects.select_related("sender", "sender__userprofile").get(id=notification_id, recipient=request.user, is_deleted=False)
+            ).get(id=notification_id) if request.user.is_admin_role() else Notification.objects.select_related("sender", "sender__userprofile").get(id=notification_id, recipient=request.user, is_deleted=False)
         except Notification.DoesNotExist:
             return self.error("Notification not found")
 
@@ -166,6 +166,15 @@ class NotificationDetailView(APIView):
         # Look up coach submission links from the mapping
         submission_links = _get_submission_links(problem_id) if problem_id else []
 
+        # Always include the notification's own link as the primary submission link
+        own_link = notification.link.strip() if notification.link else ''
+        if own_link and not any(s.get('url') == own_link for s in submission_links):
+            submission_links.insert(0, {
+                'sid': own_link.rstrip('/').split('/')[-1],
+                'user': notification.recipient.username,
+                'url': own_link,
+            })
+
         # Build canonical absolute URL for this page
         page_url = get_notification_absolute_url(notification, request=request)
 
@@ -179,4 +188,5 @@ class NotificationDetailView(APIView):
             'page_url': page_url,
             'recipient_username': notification.recipient.username,
             'coach_problem_id': problem_id,
+            'notification_id': notification.id,
         })

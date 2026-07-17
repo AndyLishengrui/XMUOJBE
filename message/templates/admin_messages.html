@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>站内信管理 - XMUOJ Admin</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+       background: #f0f2f5; color: #333; min-width: 1100px; }
+
+/* Top Bar */
+.topbar { background: #1a1a2e; color: #fff; height: 56px; display: flex; align-items: center;
+          justify-content: space-between; padding: 0 32px; font-size: 14px; }
+.topbar a { color: #ccc; text-decoration: none; transition: color .2s; }
+.topbar a:hover { color: #fff; }
+.topbar .brand { font-weight: bold; font-size: 18px; color: #fff !important; }
+.topbar .nav-links { display: flex; align-items: center; gap: 24px; }
+.topbar .nav-links a.active { color: #ffd54f !important; font-weight: bold; }
+.topbar .user-area { display: flex; align-items: center; gap: 12px; }
+.topbar .logout { color: #e94560 !important; font-size: 12px; }
+
+/* Layout */
+.page { max-width: 1400px; margin: 0 auto; padding: 24px 20px; }
+
+/* Stats Row */
+.stats-row { display: flex; gap: 16px; margin-bottom: 20px; }
+.stat-card { background: #fff; border-radius: 10px; padding: 20px 28px; box-shadow: 0 1px 3px rgba(0,0,0,.06);
+             flex: 1; text-align: center; text-decoration: none; color: inherit;
+             transition: all .2s; border: 2px solid transparent; }
+.stat-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,.1); transform: translateY(-1px); }
+.stat-card.active { border-color: #2d8cf0; }
+.stat-card .num { font-size: 36px; font-weight: 700; color: #2d8cf0; line-height: 1.2; }
+.stat-card.unread .num { color: #e65100; }
+.stat-card .label { font-size: 13px; color: #999; margin-top: 6px; }
+
+/* Tabs */
+.tab-bar { background: #fff; border-radius: 10px 10px 0 0; display: flex; border-bottom: 2px solid #e8eaec;
+           box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+.tab-item { padding: 16px 32px; font-size: 14px; color: #666; text-decoration: none; cursor: pointer;
+            border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all .2s;
+            display: flex; align-items: center; gap: 6px; }
+.tab-item:hover { color: #2d8cf0; }
+.tab-item.active { color: #2d8cf0; border-bottom-color: #2d8cf0; font-weight: 600; }
+
+/* Compose Panel */
+.compose-panel { background: #fff; border-radius: 0 0 10px 10px; box-shadow: 0 1px 3px rgba(0,0,0,.06);
+                padding: 32px; margin-bottom: 20px; display: none; }
+.compose-panel.visible { display: block; }
+.compose-panel h3 { font-size: 18px; color: #1a1a2e; margin-bottom: 24px; }
+.form-row { display: flex; gap: 16px; margin-bottom: 18px; align-items: flex-start; }
+.form-row label { width: 80px; text-align: right; font-size: 14px; color: #666; padding-top: 10px; flex-shrink: 0; font-weight: 500; }
+.form-row .field { flex: 1; position: relative; }
+.form-row input, .form-row textarea { width: 100%; padding: 10px 14px; border: 1px solid #d9d9d9;
+    border-radius: 6px; font-size: 14px; font-family: inherit; transition: border-color .2s; }
+.form-row input:focus, .form-row textarea:focus { outline: none; border-color: #2d8cf0; box-shadow: 0 0 0 2px rgba(45,140,240,.1); }
+.form-row textarea { min-height: 200px; resize: vertical; line-height: 1.6; }
+.recipient-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.recipient-tag { background: #e8f0fe; color: #2d8cf0; padding: 4px 12px; border-radius: 14px;
+                 font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
+.recipient-tag .remove { cursor: pointer; font-weight: bold; color: #999; font-size: 15px; line-height: 1; }
+.recipient-tag .remove:hover { color: #ed4014; }
+.user-dropdown { position: absolute; top: 100%; left: 0; right: 0; background: #fff; border: 1px solid #d9d9d9;
+    border-radius: 6px; max-height: 250px; overflow-y: auto; z-index: 100;
+    box-shadow: 0 6px 16px rgba(0,0,0,.12); display: none; margin-top: 2px; }
+.user-dropdown.show { display: block; }
+.user-dropdown .item { padding: 10px 14px; cursor: pointer; font-size: 13px; border-bottom: 1px solid #f5f5f5;
+    display: flex; justify-content: space-between; align-items: center; }
+.user-dropdown .item:hover { background: #f0f5ff; }
+.user-dropdown .item .uname { color: #999; font-size: 12px; }
+.user-dropdown .item .admin-badge { font-size: 10px; background: #fff3e0; color: #e65100;
+    padding: 1px 6px; border-radius: 8px; }
+.form-actions { display: flex; gap: 10px; margin-top: 8px; align-items: center; }
+.hint-text { font-size: 12px; color: #aaa; margin-top: 4px; }
+
+/* Controls bar */
+.controls { background: #fff; padding: 16px 24px; display: flex; gap: 12px; align-items: center;
+            border-bottom: 1px solid #f0f0f0; }
+.controls form { display: flex; gap: 12px; align-items: center; flex: 1; }
+.controls input { padding: 8px 14px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; min-width: 260px; }
+
+/* Table */
+.table-card { background: #fff; border-radius: 0 0 10px 10px; box-shadow: 0 1px 3px rgba(0,0,0,.06);
+              overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; min-width: 1000px; }
+th { background: #fafafa; padding: 14px 16px; text-align: left; font-size: 13px; color: #888; font-weight: 600;
+     border-bottom: 2px solid #e8eaec; white-space: nowrap; text-transform: uppercase; letter-spacing: .3px; }
+td { padding: 14px 16px; border-bottom: 1px solid #f5f5f5; font-size: 14px; vertical-align: middle; }
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: #f8faff; }
+tr.unread td { background: #fdfdff; font-weight: 500; }
+tr.unread:hover td { background: #f3f6ff; }
+.col-id { width: 60px; color: #aaa; font-size: 12px; }
+.col-title { min-width: 260px; }
+.col-from { width: 160px; }
+.col-to { width: 160px; }
+.col-status { width: 85px; }
+.col-time { width: 140px; white-space: nowrap; color: #999; font-size: 13px; }
+.col-actions { width: 130px; text-align: center; white-space: nowrap; }
+
+/* Badges & Buttons */
+.badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: 500; }
+.badge-read { background: #e8f8e8; color: #2e7d32; }
+.badge-unread { background: #fff3e0; color: #e65100; }
+.btn { display: inline-block; padding: 6px 14px; border: 1px solid #ddd; border-radius: 6px;
+       cursor: pointer; font-size: 13px; text-decoration: none; background: #fff; color: #555;
+       transition: all .15s; white-space: nowrap; line-height: 1.4; }
+.btn:hover { border-color: #bbb; color: #333; }
+.btn-primary { background: #2d8cf0; color: #fff; border-color: #2d8cf0; }
+.btn-primary:hover { background: #2196F3; border-color: #2196F3; color: #fff; }
+.btn-view { color: #2d8cf0; border-color: #2d8cf0; }
+.btn-view:hover { background: #e8f0fe; color: #2d8cf0; }
+.btn-reply { color: #19be6b; border-color: #19be6b; }
+.btn-reply:hover { background: #e8f8ee; color: #19be6b; }
+.btn-del { color: #ed4014; border-color: #ed4014; }
+.btn-del:hover { background: #fde8e4; color: #ed4014; }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+.btn-back { background: #f5f5f5; color: #666; border-color: #ddd; }
+.btn-back:hover { background: #e8e8e8; }
+
+/* Pagination */
+.bottom-bar { background: #fff; padding: 16px 24px; border-radius: 10px; margin-top: 20px;
+              box-shadow: 0 1px 3px rgba(0,0,0,.06); display: flex; justify-content: space-between;
+              align-items: center; flex-wrap: wrap; gap: 12px; }
+.pagination { display: flex; align-items: center; gap: 4px; }
+.pagination a, .pagination span { display: inline-block; padding: 7px 12px; border: 1px solid #ddd;
+    border-radius: 6px; text-decoration: none; color: #555; font-size: 13px; min-width: 36px; text-align: center; }
+.pagination a.active { background: #2d8cf0; color: #fff; border-color: #2d8cf0; font-weight: 600; }
+.pagination a:hover:not(.active):not(.disabled) { background: #f5f5f5; }
+.pagination a.disabled { color: #ccc; cursor: default; pointer-events: none; }
+.page-size-select { padding: 7px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; background: #fff; }
+.info-text { font-size: 13px; color: #888; }
+
+/* Sender display: both username and real name */
+.user-display { line-height: 1.4; }
+.user-display .real-name { font-weight: 500; }
+.user-display .username { color: #999; font-size: 12px; }
+
+/* Detail Modal */
+.modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,.4); z-index: 1000; justify-content: center; align-items: flex-start;
+    padding-top: 60px; }
+.modal-overlay.show { display: flex; }
+.modal { background: #fff; border-radius: 12px; width: 850px; max-width: 95vw; max-height: 82vh;
+    display: flex; flex-direction: column; box-shadow: 0 16px 48px rgba(0,0,0,.2); }
+.modal-header { padding: 20px 28px; border-bottom: 1px solid #eee; display: flex;
+                justify-content: space-between; align-items: flex-start; flex-shrink: 0; }
+.modal-header h3 { font-size: 18px; color: #1a1a2e; flex: 1; word-break: break-word; line-height: 1.4; }
+.modal-close { cursor: pointer; font-size: 24px; color: #999; padding: 0 4px; flex-shrink: 0;
+              background: none; border: none; line-height: 1; }
+.modal-close:hover { color: #333; }
+.modal-meta { padding: 16px 28px; background: #fafafa; border-bottom: 1px solid #f0f0f0; flex-shrink: 0;
+              display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.modal-meta .meta-item { font-size: 13px; color: #888; display: flex; align-items: center; gap: 4px; }
+.modal-meta .meta-label { color: #aaa; font-size: 12px; }
+.modal-meta .reply-context { width: 100%; background: #fffbe6; border: 1px solid #ffe58f;
+    border-radius: 6px; padding: 10px 14px; font-size: 13px; color: #8c6d00; margin-top: 4px; }
+.modal-body { padding: 28px; overflow-y: auto; flex: 1; line-height: 1.8; font-size: 15px;
+              white-space: pre-wrap; word-break: break-word; color: #333; }
+.modal-body:empty::after { content: '(无内容)'; color: #ccc; font-style: italic; }
+.modal-footer { padding: 16px 28px; border-top: 1px solid #eee; display: flex; gap: 10px; flex-shrink: 0; }
+
+/* Reply compose in modal */
+.reply-compose { display: none; padding: 20px 28px; border-top: 1px solid #eee; flex-shrink: 0; }
+.reply-compose.visible { display: block; }
+.reply-compose textarea { width: 100%; min-height: 120px; padding: 12px; border: 1px solid #d9d9d9;
+    border-radius: 6px; font-size: 14px; font-family: inherit; resize: vertical;
+    line-height: 1.6; margin-bottom: 10px; }
+.reply-compose textarea:focus { outline: none; border-color: #2d8cf0; box-shadow: 0 0 0 2px rgba(45,140,240,.1); }
+.reply-actions { display: flex; gap: 8px; align-items: center; }
+
+/* Empty state */
+.empty-state { text-align: center; padding: 60px 20px; color: #bbb; }
+.empty-state .icon { font-size: 48px; margin-bottom: 12px; }
+.empty-state p { font-size: 14px; }
+</style>
+</head>
+<body>
+
+<!-- Top Navigation -->
+<div class="topbar">
+  <div class="nav-links">
+    <a href="/" class="brand">XMUOJ</a>
+    <a href="/admin/">管理后台</a>
+    <a href="/admin/messages" class="active">站内信</a>
+    <a href="/admin/notification">📢 通知管理</a>
+  </div>
+  <div class="user-area">
+    <span>{{ request.user.username }}</span>
+    <a href="/logout/" class="logout">退出</a>
+  </div>
+</div>
+
+<div class="page">
+
+<!-- Stats -->
+<div class="stats-row">
+  <a href="?tab=inbox&page_size={{ page_size }}" class="stat-card {% if tab == 'inbox' %}active{% endif %}">
+    <div class="num">{{ inbox_total }}</div>
+    <div class="label">📥 我的收件箱</div>
+  </a>
+  <a href="?tab=inbox&page_size={{ page_size }}" class="stat-card unread">
+    <div class="num">{{ unread }}</div>
+    <div class="label">🔴 未读消息</div>
+  </a>
+  <a href="?tab=sent&page_size={{ page_size }}" class="stat-card {% if tab == 'sent' %}active{% endif %}">
+    <div class="num">{{ sent_total }}</div>
+    <div class="label">📤 已发送</div>
+  </a>
+</div>
+
+<!-- Tabs -->
+<div class="tab-bar">
+  <a href="?tab=inbox&page_size={{ page_size }}" class="tab-item {% if tab == 'inbox' %}active{% endif %}">📥 收件箱</a>
+  <a href="?tab=sent&page_size={{ page_size }}" class="tab-item {% if tab == 'sent' %}active{% endif %}">📤 已发送</a>
+  <a href="#" class="tab-item" onclick="showCompose();return false">✏️ 写站内信</a>
+</div>
+
+<!-- Compose Panel -->
+<div class="compose-panel" id="composePanel">
+  <h3 id="composeTitle">✏️ 发送站内信</h3>
+  <div class="form-row">
+    <label>收件人：</label>
+    <div class="field">
+      <input type="text" id="recipientSearch" placeholder="输入学号或姓名搜索用户..." autocomplete="off"
+             oninput="searchUsers(this.value)" onfocus="searchUsers(this.value)">
+      <div class="user-dropdown" id="userDropdown"></div>
+      <div class="recipient-tags" id="recipientTags"></div>
+      <div class="hint-text">💡 管理员可以向任何用户发送站内信，支持多选</div>
+    </div>
+  </div>
+  <div class="form-row">
+    <label>标题：</label>
+    <div class="field"><input type="text" id="msgTitle" placeholder="请输入消息标题"></div>
+  </div>
+  <div class="form-row">
+    <label>内容：</label>
+    <div class="field"><textarea id="msgContent" placeholder="请输入消息内容...&#10;&#10;支持多行文本。"></textarea></div>
+  </div>
+  <div class="form-actions">
+    <input type="hidden" id="replyToId" value="">
+    <button class="btn btn-primary" onclick="sendMessage()">📤 发送消息</button>
+    <button class="btn" onclick="hideCompose()">取消</button>
+    <span id="sendStatus" style="font-size:13px;color:#19be6b;display:none;margin-left:8px;"></span>
+  </div>
+</div>
+
+<!-- Controls -->
+<div class="controls">
+  <form method="GET" style="display:flex; gap:12px; align-items:center; flex:1;">
+    <input type="hidden" name="tab" value="{{ tab }}">
+    <input type="hidden" name="page_size" value="{{ page_size }}">
+    <input type="text" name="search" value="{{ search }}" placeholder="🔍 搜索标题、内容或用户名...">
+    <button type="submit" class="btn btn-primary">搜索</button>
+    {% if search %}<a href="?tab={{ tab }}&page_size={{ page_size }}" class="btn">✕ 清除</a>{% endif %}
+  </form>
+  <a href="/admin/" class="btn btn-back">← 管理后台</a>
+</div>
+
+<!-- Message Table -->
+<div class="table-card">
+<table>
+<thead><tr>
+  <th class="col-id">#</th>
+  <th class="col-title">标题</th>
+  <th class="col-from">{% if tab == 'sent' %}收件人{% else %}发送者{% endif %}</th>
+  {% if tab != 'sent' %}<th class="col-to">收件人</th>{% endif %}
+  <th class="col-status">状态</th>
+  <th class="col-time">时间</th>
+  <th class="col-actions">操作</th>
+</tr></thead>
+<tbody>
+{% for m in messages %}
+<tr class="{% if not m.is_read and tab != 'sent' %}unread{% endif %}" id="msg-row-{{ m.id }}">
+  <td class="col-id">{{ m.id }}</td>
+  <td class="col-title">
+    <button class="btn btn-view btn-sm" onclick="openDetail({{ m.id }})" style="text-align:left;">
+      {{ m.title|truncatechars:55 }}
+    </button>
+  </td>
+  <td class="col-from">
+    <div class="user-display">
+      <div class="real-name">{{ m.sender_name }}</div>
+      {% if m.sender_username %}<div class="username">@{{ m.sender_username }}</div>{% endif %}
+    </div>
+  </td>
+  {% if tab != 'sent' %}
+  <td class="col-to">
+    <div class="user-display">
+      <div class="real-name">{{ m.recipient_name }}</div>
+      {% if m.recipient_username %}<div class="username">@{{ m.recipient_username }}</div>{% endif %}
+    </div>
+  </td>
+  {% endif %}
+  <td class="col-status" id="msg-status-{{ m.id }}">
+    {% if m.is_read %}
+    <span class="badge badge-read">已读</span>
+    {% else %}
+    <span class="badge badge-unread">● 未读</span>
+    {% endif %}
+  </td>
+  <td class="col-time">{{ m.create_time|date:"Y-m-d H:i" }}</td>
+  <td class="col-actions">
+    <button class="btn btn-view btn-sm" onclick="openDetail({{ m.id }})">查看</button>
+    <button class="btn btn-del btn-sm" onclick="deleteMessage({{ m.id }})">删除</button>
+  </td>
+</tr>
+{% empty %}
+<tr><td colspan="{% if tab != 'sent' %}7{% else %}6{% endif %}"><div class="empty-state">
+  <div class="icon">📭</div><p>暂无站内信</p>
+</div></td></tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+
+<!-- Pagination -->
+{% if messages %}
+<div class="bottom-bar">
+  <div class="pagination">
+    {% if has_prev %}
+    <a href="?tab={{ tab }}&page={{ prev_page }}&search={{ search }}&page_size={{ page_size }}">←</a>
+    {% else %}<a class="disabled">←</a>{% endif %}
+    {% for p in page_range %}
+      {% if p == page %}<a class="active">{{ p }}</a>
+      {% elif p == '...' %}<span>…</span>
+      {% else %}<a href="?tab={{ tab }}&page={{ p }}&search={{ search }}&page_size={{ page_size }}">{{ p }}</a>{% endif %}
+    {% endfor %}
+    {% if has_next %}
+    <a href="?tab={{ tab }}&page={{ next_page }}&search={{ search }}&page_size={{ page_size }}">→</a>
+    {% else %}<a class="disabled">→</a>{% endif %}
+  </div>
+  <div style="display:flex;align-items:center;gap:8px;">
+    <span class="info-text">每页</span>
+    <select class="page-size-select" onchange="changePageSize(this.value)">
+      {% for s in page_size_options %}
+      <option value="{{ s }}" {% if s == page_size %}selected{% endif %}>{{ s }} 条</option>
+      {% endfor %}
+    </select>
+    <span class="info-text">第 {{ page }}/{{ total_pages }} 页</span>
+  </div>
+</div>
+{% endif %}
+
+</div><!-- .page -->
+
+<!-- Detail Modal -->
+<div class="modal-overlay" id="detailModal">
+<div class="modal">
+  <div class="modal-header">
+    <h3 id="detailTitle"></h3>
+    <button class="modal-close" onclick="closeDetail()">&times;</button>
+  </div>
+  <div class="modal-meta" id="detailMeta"></div>
+  <div class="modal-body" id="detailBody"></div>
+  <div class="modal-footer">
+    <button class="btn btn-reply" id="btnReply" onclick="startReply()">↩ 回复</button>
+    <button class="btn" onclick="closeDetail()">关闭</button>
+  </div>
+  <div class="reply-compose" id="replyCompose">
+    <textarea id="replyContent" placeholder="输入回复内容..."></textarea>
+    <div class="reply-actions">
+      <button class="btn btn-primary" onclick="sendReply()">📤 发送回复</button>
+      <button class="btn" onclick="cancelReply()">取消</button>
+      <span id="replyStatus" style="font-size:13px;color:#19be6b;display:none;margin-left:8px;"></span>
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+var selectedRecipients = [];
+var currentDetailMsg = null;
+
+// === User Search ===
+function searchUsers(q) {
+  if (q.length < 1) { document.getElementById('userDropdown').classList.remove('show'); return; }
+  fetch('/api/admin/user?keyword=' + encodeURIComponent(q) + '&limit=10&offset=0', {
+    credentials: 'same-origin'
+  }).then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.error || !d.data) return;
+      var users = d.data.results || [];
+      var dd = document.getElementById('userDropdown');
+      dd.innerHTML = users.filter(function(u) {
+        return !selectedRecipients.find(function(s) { return s.username === u.username; });
+      }).map(function(u) {
+        var name = u.real_name || u.username;
+        var badge = (u.admin_type === 'Super Admin' || u.admin_type === 'Admin')
+          ? '<span class="admin-badge">管理员</span>' : '';
+        return '<div class="item" onclick="addRecipient(\'' + u.username + '\',\'' + name + '\')">' +
+               '<span>' + name + ' <span class="uname">@' + u.username + '</span></span>' + badge + '</div>';
+      }).join('');
+      dd.classList.toggle('show', dd.innerHTML !== '');
+    });
+}
+
+function addRecipient(username, name) {
+  if (selectedRecipients.find(function(s) { return s.username === username; })) return;
+  selectedRecipients.push({username: username, name: name});
+  document.getElementById('recipientSearch').value = '';
+  document.getElementById('userDropdown').classList.remove('show');
+  renderRecipients();
+}
+
+function removeRecipient(username) {
+  selectedRecipients = selectedRecipients.filter(function(s) { return s.username !== username; });
+  renderRecipients();
+}
+
+function renderRecipients() {
+  document.getElementById('recipientTags').innerHTML = selectedRecipients.map(function(s) {
+    return '<span class="recipient-tag">' + s.name + ' @' + s.username +
+           '<span class="remove" onclick="removeRecipient(\'' + s.username + '\')">&times;</span></span>';
+  }).join('');
+}
+
+// === Compose ===
+function showCompose(replyData) {
+  var panel = document.getElementById('composePanel');
+  panel.classList.add('visible');
+
+  if (replyData) {
+    document.getElementById('composeTitle').textContent = '↩ 回复站内信';
+    document.getElementById('replyToId').value = replyData.replyToId;
+    document.getElementById('msgTitle').value = replyData.title;
+    document.getElementById('msgContent').value = '';
+    document.getElementById('msgContent').focus();
+    if (replyData.recipUsername && replyData.recipName) {
+      selectedRecipients = [{username: replyData.recipUsername, name: replyData.recipName}];
+    } else {
+      selectedRecipients = [];
+    }
+  } else {
+    document.getElementById('composeTitle').textContent = '✏️ 发送站内信';
+    document.getElementById('replyToId').value = '';
+    document.getElementById('msgTitle').value = '';
+    document.getElementById('msgContent').value = '';
+    selectedRecipients = [];
+  }
+  renderRecipients();
+  document.getElementById('sendStatus').style.display = 'none';
+  panel.scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
+function hideCompose() {
+  document.getElementById('composePanel').classList.remove('visible');
+  document.getElementById('recipientSearch').value = '';
+  document.getElementById('msgTitle').value = '';
+  document.getElementById('msgContent').value = '';
+  document.getElementById('replyToId').value = '';
+  selectedRecipients = [];
+  renderRecipients();
+  document.getElementById('sendStatus').style.display = 'none';
+}
+
+function sendMessage() {
+  var title = document.getElementById('msgTitle').value.trim();
+  var content = document.getElementById('msgContent').value.trim();
+  var replyTo = document.getElementById('replyToId').value;
+
+  if (!title) { alert('请输入标题'); return; }
+  if (selectedRecipients.length === 0) { alert('请选择收件人'); return; }
+
+  var s = document.getElementById('sendStatus');
+  s.style.display = 'inline'; s.textContent = '发送中...'; s.style.color = '#2d8cf0';
+
+  var body = {
+    recipients: selectedRecipients.map(function(x) { return x.username; }),
+    title: title,
+    content: content
+  };
+  if (replyTo) body.reply_to = parseInt(replyTo);
+
+  fetch('/api/messages/send/', {
+    method: 'POST', credentials: 'same-origin',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  }).then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.error) { s.textContent = '失败: ' + d.data; s.style.color = '#ed4014'; return; }
+      s.textContent = '✓ 已发送 ' + d.data.sent + ' 条!'; s.style.color = '#19be6b';
+      setTimeout(function() { hideCompose(); window.location.reload(); }, 1200);
+    }).catch(function() { s.textContent = '发送失败'; s.style.color = '#ed4014'; });
+}
+
+// === Detail Modal (AJAX, no page reload) ===
+function openDetail(id) {
+  fetch('/api/messages/detail/?id=' + id, {credentials:'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.error) { alert(d.data); return; }
+      var m = d.data;
+      currentDetailMsg = m;
+
+      document.getElementById('detailTitle').textContent = m.title;
+
+      var metaHtml = '<span class="meta-item"><span class="meta-label">发送者：</span>' +
+        '<b>' + (m.sender_name || '(系统)') + '</b> (@' + (m.sender_username || 'system') + ')</span>' +
+        '<span class="meta-item"><span class="meta-label">收件人：</span>' +
+        '<b>' + (m.recipient_name || '') + '</b> (@' + (m.recipient_username || '') + ')</span>' +
+        '<span class="meta-item"><span class="meta-label">时间：</span>' + m.create_time + '</span>';
+
+      if (m.reply_to_title) {
+        metaHtml += '<div class="reply-context">↩ 这是对 "<b>' + m.reply_to_title + '</b>" 的回复' +
+          (m.reply_to_sender_name ? '（原发送者：' + m.reply_to_sender_name + '）' : '') + '</div>';
+      }
+
+      document.getElementById('detailMeta').innerHTML = metaHtml;
+      document.getElementById('detailBody').textContent = m.content || '';
+      document.getElementById('detailModal').classList.add('show');
+
+      // Hide reply compose
+      document.getElementById('replyCompose').classList.remove('visible');
+      document.getElementById('replyStatus').style.display = 'none';
+
+      // Update row status without reload
+      if (!m.is_read) {
+        var statusCell = document.getElementById('msg-status-' + id);
+        if (statusCell) {
+          statusCell.innerHTML = '<span class="badge badge-read">已读</span>';
+        }
+        var row = document.getElementById('msg-row-' + id);
+        if (row) row.classList.remove('unread');
+        var unreadEl = document.querySelector('.stat-card.unread .num');
+        if (unreadEl) {
+          var cur = parseInt(unreadEl.textContent) || 0;
+          if (cur > 0) unreadEl.textContent = cur - 1;
+        }
+        currentDetailMsg.is_read = true;
+      }
+    });
+}
+
+function closeDetail() {
+  document.getElementById('detailModal').classList.remove('show');
+  currentDetailMsg = null;
+  document.getElementById('replyCompose').classList.remove('visible');
+}
+
+// === Reply ===
+function startReply() {
+  if (!currentDetailMsg) return;
+
+  // Open compose with reply context
+  var replyTitle = currentDetailMsg.title;
+  if (!replyTitle.startsWith('Re: ')) replyTitle = 'Re: ' + replyTitle;
+
+  var recipUsername = currentDetailMsg.sender_username;
+  var recipName = currentDetailMsg.sender_name;
+
+  closeDetail();
+  showCompose({
+    replyToId: currentDetailMsg.id,
+    title: replyTitle,
+    recipUsername: recipUsername,
+    recipName: recipName
+  });
+}
+
+function sendReply() {
+  var content = document.getElementById('replyContent').value.trim();
+  if (!content) { alert('请输入回复内容'); return; }
+  if (!currentDetailMsg) return;
+
+  var s = document.getElementById('replyStatus');
+  s.style.display = 'inline'; s.textContent = '发送中...'; s.style.color = '#2d8cf0';
+
+  var recipUsername = currentDetailMsg.sender_username;
+  var title = currentDetailMsg.title;
+  if (!title.startsWith('Re: ')) title = 'Re: ' + title;
+
+  fetch('/api/messages/send/', {
+    method: 'POST', credentials: 'same-origin',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      recipients: [recipUsername],
+      title: title,
+      content: content,
+      reply_to: currentDetailMsg.id
+    })
+  }).then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.error) { s.textContent = '失败: ' + d.data; s.style.color = '#ed4014'; return; }
+      s.textContent = '✓ 回复已发送!'; s.style.color = '#19be6b';
+      setTimeout(function() {
+        document.getElementById('replyCompose').classList.remove('visible');
+        document.getElementById('replyContent').value = '';
+        s.style.display = 'none';
+        closeDetail();
+        window.location.reload();
+      }, 1000);
+    }).catch(function() { s.textContent = '发送失败'; s.style.color = '#ed4014'; });
+}
+
+function cancelReply() {
+  document.getElementById('replyCompose').classList.remove('visible');
+  document.getElementById('replyContent').value = '';
+  document.getElementById('replyStatus').style.display = 'none';
+}
+
+// === Delete ===
+function deleteMessage(id) {
+  if (!confirm('确定要删除这条站内信吗？')) return;
+  fetch('/api/messages/delete/?id=' + id, {
+    method: 'DELETE', credentials: 'same-origin',
+    headers: {'Content-Type': 'application/json'}
+  }).then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.error) { alert('删除失败: ' + d.data); return; }
+      var row = document.getElementById('msg-row-' + id);
+      if (row) row.style.display = 'none';
+    }).catch(function() { alert('删除失败'); });
+}
+
+// === Page Size ===
+function changePageSize(size) {
+  var p = new URLSearchParams(window.location.search);
+  p.set('page_size', size); p.set('page', '1');
+  window.location.search = p.toString();
+}
+
+// === Close dropdown on outside click ===
+document.addEventListener('click', function(e) {
+  if (!e.target.closest('#recipientSearch') && !e.target.closest('#userDropdown')) {
+    document.getElementById('userDropdown').classList.remove('show');
+  }
+});
+
+// === Close modal on overlay click ===
+document.getElementById('detailModal').addEventListener('click', function(e) {
+  if (e.target === this) closeDetail();
+});
+
+// === Close modal on Escape ===
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') closeDetail();
+});
+</script>
+</body>
+</html>
