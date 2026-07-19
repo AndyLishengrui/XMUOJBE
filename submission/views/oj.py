@@ -229,3 +229,88 @@ class CoachReportAPI(APIView):
             return self.success(None)
         except Exception:
             return self.success(None)
+
+
+class RunCodeAPI(APIView):
+    """Debug endpoint: compile and run code with custom input, no judging or submission recording."""
+
+    @login_required
+    def post(self, request):
+        problem_id = request.data.get("problem_id")
+        language = request.data.get("language")
+        code = request.data.get("code")
+        user_input = request.data.get("input", "")
+        contest_id = request.data.get("contest_id")
+
+        if not problem_id or not language or not code:
+            return self.error("problem_id, language, and code are required")
+
+        try:
+            if contest_id:
+                problem = Problem.objects.get(id=problem_id, contest_id=contest_id, visible=True)
+            else:
+                problem = Problem.objects.get(id=problem_id, contest_id__isnull=True, visible=True)
+        except Problem.DoesNotExist:
+            return self.error("Problem not found")
+
+        if language not in problem.languages:
+            return self.error(f"{language} is not allowed in this problem")
+
+        sub_config = list(filter(lambda item: language == item["name"], SysOptions.languages))[0]
+        spj_config = {}
+        if problem.spj_code:
+            for lang in SysOptions.spj_languages:
+                if lang["name"] == problem.spj_language:
+                    spj_config = lang["spj"]
+                    break
+
+        data = {
+            "language_config": sub_config["config"],
+            "src": code,
+            "max_cpu_time": problem.time_limit,
+            "max_memory": 1024 * 1024 * problem.memory_limit,
+            "test_case_id": None,
+            "output": False,
+            "spj_version": problem.spj_version,
+            "spj_config": spj_config.get("config"),
+            "spj_compile_config": spj_config.get("compile"),
+            "spj_src": problem.spj_code,
+            "io_mode": problem.io_mode,
+            "input": user_input,
+        }
+
+        from conf.models import JudgeServer
+        server = JudgeServer.objects.filter(is_disabled=False).first()
+        if not server:
+            return self.error("No judge server available")
+
+        try:
+            resp = requests.post(
+                urljoin(server.service_url, "/judge"),
+                json=data,
+                headers={"X-Judge-Server-Token": server.token},
+                timeout=30
+            ).json()
+        except Exception as e:
+            logger.exception(f"Judge server error: {e}")
+            return self.error("Judge server error")
+
+        if resp.get("err"):
+            return self.error(f"Compile error: {resp.get('data', '')}")
+
+        result_data = resp.get("data", [])
+        if result_data and len(result_data) > 0:
+            output = result_data[0].get("output", "")
+            if len(output) > 1000:
+                output = output[:1000] + "\n..."
+            return self.success({
+                "output": output,
+                "time_cost": result_data[0].get("cpu_time", 0),
+                "memory_cost": result_data[0].get("memory", 0),
+            })
+        else:
+            return self.success({
+                "output": "(no output)",
+                "time_cost": 0,
+                "memory_cost": 0,
+            })
