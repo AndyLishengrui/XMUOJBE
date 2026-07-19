@@ -100,3 +100,59 @@ class Problem(models.Model):
     def add_ac_number(self):
         self.accepted_number = models.F("accepted_number") + 1
         self.save(update_fields=["accepted_number"])
+
+# ---- Course / Chapter / ChapterProblem Models ----
+
+class Course(models.Model):
+    """教材（分组/班级的升级版）"""
+    title = models.CharField(max_length=255, db_index=True)
+    description = models.TextField(null=True, blank=True)
+    visible = models.BooleanField(default=True)
+    order = models.IntegerField(default=0)
+    contest_id = models.IntegerField(null=True, blank=True, help_text="关联的隐藏OI比赛ID，用于提交/AC跟踪")
+    created_time = models.DateTimeField(auto_now_add=True)
+    updated_time = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "course"
+        ordering = ("order", "id")
+
+    def __str__(self):
+        return self.title
+
+
+class Chapter(models.Model):
+    """教材下的章节"""
+    course = models.ForeignKey(Course, related_name="chapters", on_delete=models.CASCADE)
+    title = models.CharField(max_length=255)
+    visible = models.BooleanField(default=True)
+    order = models.IntegerField(default=0)
+    created_time = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "chapter"
+        ordering = ("order", "id")
+
+    def __str__(self):
+        return f"{self.course.title} - {self.title}"
+
+
+class ChapterProblem(models.Model):
+    """章节内的题目关联"""
+    PROBLEM_TYPES = (
+        ("example", "例题"),
+        ("exercise", "习题"),
+    )
+    chapter = models.ForeignKey(Chapter, related_name="problems", on_delete=models.CASCADE)
+    display_id = models.CharField(max_length=64, help_text="题号，对应 Problem._id")
+    type = models.CharField(max_length=16, choices=PROBLEM_TYPES, default="exercise")
+    order = models.IntegerField(default=0)
+    created_time = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "chapter_problem"
+        ordering = ("order", "id")
+        unique_together = (("chapter", "display_id"),)
+
+    def __str__(self):
+        return f"{self.chapter.title} - {self.display_id}"

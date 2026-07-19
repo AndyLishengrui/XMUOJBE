@@ -7,7 +7,7 @@ from utils.api import UsernameSerializer, serializers
 from utils.constants import Difficulty
 from utils.serializers import LanguageNameMultiChoiceField, SPJLanguageNameChoiceField, LanguageNameChoiceField
 
-from .models import Problem, ProblemRuleType, ProblemTag, ProblemIOMode
+from .models import Problem, ProblemRuleType, ProblemTag, ProblemIOMode, Course, Chapter, ChapterProblem
 from .tag import clean_tag_aliases, clean_tag_name, normalize_tag_name
 from .utils import parse_problem_template, is_problem_public_test_case_download_enabled
 
@@ -94,6 +94,17 @@ class EditContestProblemSerializer(CreateOrEditProblemSerializer):
 class BatchUpdateContestProblemLanguagesSerializer(serializers.Serializer):
     contest_id = serializers.IntegerField()
     languages = LanguageNameMultiChoiceField()
+
+
+class BatchUpdateProblemTagsSerializer(serializers.Serializer):
+    problem_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), allow_empty=False)
+    operation = serializers.ChoiceField(choices=["replace", "append", "remove"])
+    tags = serializers.ListField(child=serializers.CharField(max_length=32), allow_empty=True, required=False)
+
+
+class BatchUpdateProblemSourceSerializer(serializers.Serializer):
+    problem_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), allow_empty=False)
+    source = serializers.CharField(max_length=256, allow_blank=True, allow_null=True, required=False)
 
 
 class TagSerializer(serializers.ModelSerializer):
@@ -334,3 +345,100 @@ class FPSProblemSerializer(serializers.Serializer):
     template = serializers.ListField(child=serializers.DictField(), allow_empty=True, allow_null=True)
     append = serializers.ListField(child=serializers.DictField(), allow_empty=True, allow_null=True)
     prepend = serializers.ListField(child=serializers.DictField(), allow_empty=True, allow_null=True)
+
+# ---- Course / Chapter Serializers (consolidated) ----
+from rest_framework import serializers
+
+
+class CourseSerializer(serializers.ModelSerializer):
+    chapters = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Course
+        fields = ("id", "title", "description", "visible", "order", "contest_id", "chapters", "created_time", "updated_time")
+
+    def get_chapters(self, obj):
+        chapters = obj.chapters.all().order_by("order", "id")
+        result = []
+        for ch in chapters:
+            probs = [{"display_id": cp.display_id, "type": cp.type, "order": cp.order}
+                     for cp in ch.problems.all().order_by("order", "id")]
+            result.append({
+                "id": ch.id,
+                "title": ch.title,
+                "visible": ch.visible,
+                "order": ch.order,
+                "problems": probs
+            })
+        return result
+
+
+class ChapterSerializer(serializers.ModelSerializer):
+    problems = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Chapter
+        fields = ("id", "course", "title", "visible", "order", "problems", "created_time")
+
+    def get_problems(self, obj):
+        return [{"display_id": cp.display_id, "type": cp.type, "order": cp.order}
+                for cp in obj.problems.all().order_by("order", "id")]
+
+
+class ChapterProblemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ChapterProblem
+        fields = ("id", "chapter", "display_id", "type", "order", "created_time")
+
+
+class CourseCreateSerializer(serializers.Serializer):
+    title = serializers.CharField(max_length=255)
+    description = serializers.CharField(allow_blank=True, required=False, default="")
+    visible = serializers.BooleanField(default=True)
+    order = serializers.IntegerField(default=0)
+
+
+class CourseEditSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    title = serializers.CharField(max_length=255)
+    description = serializers.CharField(allow_blank=True, required=False, default="")
+    visible = serializers.BooleanField(default=True)
+    order = serializers.IntegerField(default=0)
+
+
+class ChapterCreateSerializer(serializers.Serializer):
+    course_id = serializers.IntegerField()
+    title = serializers.CharField(max_length=255)
+    visible = serializers.BooleanField(default=True)
+    order = serializers.IntegerField(default=0)
+
+
+class ChapterEditSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    title = serializers.CharField(max_length=255, required=False)
+    visible = serializers.BooleanField(default=True, required=False)
+    order = serializers.IntegerField(default=0, required=False)
+
+
+class ChapterProblemCreateSerializer(serializers.Serializer):
+    course_id = serializers.IntegerField()
+    chapter_id = serializers.IntegerField()
+    display_id = serializers.CharField(max_length=64)
+    type = serializers.ChoiceField(choices=["example", "exercise"])
+    order = serializers.IntegerField(default=0)
+
+
+class ChapterProblemEditSerializer(serializers.Serializer):
+    course_id = serializers.IntegerField()
+    chapter_id = serializers.IntegerField()
+    display_id = serializers.CharField(max_length=64)
+    type = serializers.ChoiceField(choices=["example", "exercise"], required=False)
+    order = serializers.IntegerField(required=False)
+
+
+class ChapterProblemMoveSerializer(serializers.Serializer):
+    course_id = serializers.IntegerField()
+    from_chapter_id = serializers.IntegerField()
+    to_chapter_id = serializers.IntegerField()
+    display_id = serializers.CharField(max_length=64)
+    type = serializers.ChoiceField(choices=["example", "exercise"], required=False)

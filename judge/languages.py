@@ -139,15 +139,8 @@ _py3_lang_config = {
 
 //APPEND BEGIN
 //APPEND END""",
-    "compile": {
-        "src_name": "solution.py",
-        "exe_name": "solution.py",
-        "max_cpu_time": 3000,
-        "max_real_time": 10000,
-        "max_memory": 128 * 1024 * 1024,
-        "compile_command": "/usr/bin/python3 -m py_compile {src_path}",
-    },
     "run": {
+        "exe_name": "solution.py",
         "command": "/usr/bin/python3 {exe_path}",
         "seccomp_rule": "general",
         "env": default_env + ["PYTHONIOENCODING=utf-8"]

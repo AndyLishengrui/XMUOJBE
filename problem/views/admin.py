@@ -11,7 +11,7 @@ from django.db import transaction
 from django.db.models import Q, Count
 from django.http import StreamingHttpResponse, FileResponse
 
-from account.decorators import problem_permission_required, ensure_created_by
+from account.decorators import admin_role_required, problem_permission_required, ensure_created_by
 from contest.models import Contest, ContestStatus
 from fps.parser import FPSHelper, FPSParser
 from judge.dispatcher import SPJCompiler
@@ -21,14 +21,15 @@ from utils.api import APIView, CSRFExemptAPIView, validate_serializer, APIError
 from utils.constants import Difficulty
 from utils.shortcuts import rand_str, natural_sort_key
 from utils.tasks import delete_files
-from ..models import Problem, ProblemRuleType, ProblemTag
+from ..models import Problem, ProblemRuleType, ProblemTag, Course, Chapter, ChapterProblem
 from ..serializers import (CreateContestProblemSerializer, CompileSPJSerializer,
                            CreateProblemSerializer, EditProblemSerializer, EditContestProblemSerializer,
                            ProblemAdminSerializer, TestCaseUploadForm, ContestProblemMakePublicSerializer,
                            AddContestProblemSerializer, ExportProblemSerializer,
                            ExportProblemRequestSerialzier, UploadProblemForm, ImportProblemSerializer,
                FPSProblemSerializer, ProblemTagAdminSerializer, UpsertProblemTagSerializer,
-               MergeProblemTagSerializer, BatchUpdateContestProblemLanguagesSerializer)
+               MergeProblemTagSerializer, BatchUpdateContestProblemLanguagesSerializer,
+               BatchUpdateProblemTagsSerializer, BatchUpdateProblemSourceSerializer)
 from ..tag import (assign_problem_tags, clean_tag_aliases, clean_tag_name,
            normalize_problem_tag_instance, serialize_problem_tag_audit, merge_problem_tags,
            delete_problem_tag)
@@ -624,6 +625,82 @@ class BatchUpdateContestProblemLanguagesAPI(APIView):
         return self.success({"updated_count": updated_count})
 
 
+class BatchUpdateProblemAPI(APIView):
+    @problem_permission_required
+    @validate_serializer(BatchUpdateProblemTagsSerializer)
+    def put(self, request):
+        user = request.user
+        if not user.can_mgmt_all_problem():
+            return self.error("No permission to batch update problems")
+
+        data = request.data
+        problem_ids = list(dict.fromkeys(data["problem_ids"]))
+        operation = data["operation"]
+        incoming_tags = [clean_tag_name(tag) for tag in (data.get("tags") or [])]
+        incoming_tags = [tag for tag in incoming_tags if tag]
+
+        if operation in ("append", "remove") and len(incoming_tags) == 0:
+            return self.error("At least one tag is required")
+
+        problems = list(Problem.objects.filter(id__in=problem_ids, contest_id__isnull=True))
+        if len(problems) == 0:
+            return self.error("No valid problems found")
+
+        fallback_tag, _ = ProblemTag.objects.get_or_create(
+            normalized_name="totag",
+            defaults={"name": "toTag", "aliases": [], "is_active": True}
+        )
+        if not fallback_tag.is_active:
+            fallback_tag.is_active = True
+            fallback_tag.save(update_fields=["is_active"])
+
+        updated = 0
+        for problem in problems:
+            current_tags = [tag.name for tag in problem.tags.all()]
+
+            if operation == "replace":
+                next_tags = list(dict.fromkeys(incoming_tags))
+            elif operation == "append":
+                merged = list(current_tags)
+                existing = {clean_tag_name(tag).lower() for tag in merged}
+                for tag in incoming_tags:
+                    key = clean_tag_name(tag).lower()
+                    if key and key not in existing:
+                        existing.add(key)
+                        merged.append(tag)
+                next_tags = merged
+            else:
+                remove_set = {clean_tag_name(tag).lower() for tag in incoming_tags}
+                next_tags = [tag for tag in current_tags if clean_tag_name(tag).lower() not in remove_set]
+
+            if len(next_tags) == 0:
+                next_tags = [fallback_tag.name]
+
+            try:
+                assign_problem_tags(problem, next_tags, allow_create=True)
+                updated += 1
+            except APIError as error:
+                return self.error(error.msg, error.err)
+
+        return self.success({"updated_count": updated})
+
+    @problem_permission_required
+    @validate_serializer(BatchUpdateProblemSourceSerializer)
+    def post(self, request):
+        user = request.user
+        if not user.can_mgmt_all_problem():
+            return self.error("No permission to batch update problems")
+
+        data = request.data
+        problem_ids = list(dict.fromkeys(data["problem_ids"]))
+        source = data.get("source")
+        if source is None:
+            source = ""
+
+        updated_count = Problem.objects.filter(id__in=problem_ids, contest_id__isnull=True).update(source=source)
+        return self.success({"updated_count": updated_count})
+
+
 class MakeContestProblemPublicAPIView(APIView):
     @validate_serializer(ContestProblemMakePublicSerializer)
     @problem_permission_required
@@ -907,3 +984,300 @@ class FPSProblemImport(CSRFExemptAPIView):
                 problem_data["test_case_score"] = score
                 self._create_problem(problem_data, request.user)
         return self.success({"import_count": len(problems)})
+
+
+# ========== Course / Chapter / Problem Management ==========
+
+from ..models import Course, Chapter, ChapterProblem
+from ..serializers import (
+    CourseSerializer, ChapterSerializer, ChapterProblemSerializer,
+    CourseCreateSerializer, CourseEditSerializer,
+    ChapterCreateSerializer, ChapterEditSerializer,
+    ChapterProblemCreateSerializer, ChapterProblemEditSerializer,
+    ChapterProblemMoveSerializer,
+)
+
+
+class CourseAdminAPI(APIView):
+    """教材管理 API"""
+
+    @admin_role_required
+    def get(self, request):
+        course_id = request.GET.get("id")
+        if course_id:
+            try:
+                course = Course.objects.get(id=course_id)
+                return self.success(CourseSerializer(course).data)
+            except Course.DoesNotExist:
+                return self.error("教材不存在")
+        courses = Course.objects.all().order_by("order", "id")
+        return self.success(CourseSerializer(courses, many=True).data)
+
+    @validate_serializer(CourseCreateSerializer)
+    @admin_role_required
+    def post(self, request):
+        data = request.data
+        course = Course.objects.create(
+            title=data["title"],
+            description=data.get("description", ""),
+            visible=data.get("visible", True),
+            order=data.get("order", 0),
+        )
+        # 自动创建配套的隐藏OI比赛（10年有效期，用于提交/AC跟踪）
+        from datetime import timedelta
+        from django.utils import timezone
+        from contest.models import Contest
+        contest = Contest.objects.create(
+            title=f"[教材] {course.title}",
+            description=f"教材「{course.title}」配套题库",
+            start_time=timezone.now(),
+            end_time=timezone.now() + timedelta(days=365 * 10),
+            rule_type="OI",
+            visible=True,
+            password=None,
+            created_by=request.user,
+            real_time_rank=False,
+        )
+        course.contest_id = contest.id
+        course.save(update_fields=["contest_id"])
+        return self.success(CourseSerializer(course).data)
+
+    @validate_serializer(CourseEditSerializer)
+    @admin_role_required
+    def put(self, request):
+        data = request.data
+        try:
+            course = Course.objects.get(id=data["id"])
+        except Course.DoesNotExist:
+            return self.error("教材不存在")
+        course.title = data["title"]
+        course.description = data.get("description", "")
+        course.visible = data.get("visible", True)
+        course.order = data.get("order", 0)
+        course.save()
+        return self.success(CourseSerializer(course).data)
+
+    @admin_role_required
+    def delete(self, request):
+        course_id = request.GET.get("id")
+        if not course_id:
+            return self.error("缺少教材ID")
+        try:
+            course = Course.objects.get(id=course_id)
+        except Course.DoesNotExist:
+            return self.error("教材不存在")
+
+        # 统计级联删除范围
+        chapters = Chapter.objects.filter(course=course).order_by("order", "id")
+        chapter_count = chapters.count()
+        problem_count = ChapterProblem.objects.filter(chapter__course=course).count()
+        has_contest = bool(course.contest_id)
+
+        # 未确认时返回预览信息
+        if not request.GET.get("confirm") == "true":
+            return self.success({
+                "course": {
+                    "id": course.id,
+                    "title": course.title,
+                },
+                "cascade": {
+                    "chapters": chapter_count,
+                    "chapter_list": [{"id": ch.id, "title": ch.title} for ch in chapters],
+                    "problems": problem_count,
+                    "contest": has_contest,
+                },
+                "message": f"将删除教材「{course.title}」及其 {chapter_count} 个章节、{problem_count} 道题目关联"
+                           + ("、配套课堂题库" if has_contest else "")
+                           + "，此操作不可撤销",
+            })
+
+        # 确认后执行级联删除
+        # 1. 删除关联的比赛（绕过 "运行中的实验无法删除" 限制）
+        if has_contest:
+            from django.db import connection
+            from problem.models import Problem
+            Problem.objects.filter(contest_id=course.contest_id).update(contest_id=None)
+            with connection.cursor() as cursor:
+                cursor.execute("DELETE FROM contest WHERE id = %s", [course.contest_id])
+
+        # 2. 删除教材（CASCADE: chapters → chapter_problems）
+        course.delete()
+        return self.success({
+            "message": "删除成功",
+            "deleted": {
+                "course": course.title,
+                "chapters": chapter_count,
+                "problems": problem_count,
+                "contest": has_contest,
+            },
+        })
+
+
+class ChapterAdminAPI(APIView):
+    """章节管理 API"""
+
+    @admin_role_required
+    def get(self, request):
+        course_id = request.GET.get("course_id")
+        if not course_id:
+            return self.error("缺少教材ID")
+        chapters = Chapter.objects.filter(course_id=course_id).order_by("order", "id")
+        return self.success(ChapterSerializer(chapters, many=True).data)
+
+    @validate_serializer(ChapterCreateSerializer)
+    @admin_role_required
+    def post(self, request):
+        data = request.data
+        try:
+            course = Course.objects.get(id=data["course_id"])
+        except Course.DoesNotExist:
+            return self.error("教材不存在")
+        chapter = Chapter.objects.create(
+            course=course,
+            title=data["title"],
+            visible=data.get("visible", True),
+            order=data.get("order", 0),
+        )
+        return self.success(ChapterSerializer(chapter).data)
+
+    @validate_serializer(ChapterEditSerializer)
+    @admin_role_required
+    def put(self, request):
+        data = request.data
+        try:
+            chapter = Chapter.objects.get(id=data["id"])
+        except Chapter.DoesNotExist:
+            return self.error("章节不存在")
+        if "title" in data:
+            chapter.title = data["title"]
+        if "visible" in data:
+            chapter.visible = data["visible"]
+        if "order" in data:
+            chapter.order = data["order"]
+        chapter.save()
+        return self.success(ChapterSerializer(chapter).data)
+
+    @admin_role_required
+    def delete(self, request):
+        chapter_id = request.GET.get("id")
+        course_id = request.GET.get("course_id")
+        if not chapter_id:
+            return self.error("缺少章节ID")
+        try:
+            chapter = Chapter.objects.get(id=chapter_id)
+            chapter.delete()
+            return self.success("删除成功")
+        except Chapter.DoesNotExist:
+            return self.error("章节不存在")
+
+
+class ChapterProblemAdminAPI(APIView):
+    """章节题目管理 API"""
+
+    @admin_role_required
+    def get(self, request):
+        course_id = request.GET.get("course_id")
+        chapter_id = request.GET.get("chapter_id")
+        if not chapter_id:
+            return self.error("缺少章节ID")
+        problems = ChapterProblem.objects.filter(chapter_id=chapter_id).order_by("order", "id")
+        return self.success(ChapterProblemSerializer(problems, many=True).data)
+
+    @validate_serializer(ChapterProblemCreateSerializer)
+    @admin_role_required
+    def post(self, request):
+        data = request.data
+        try:
+            chapter = Chapter.objects.get(id=data["chapter_id"], course_id=data["course_id"])
+        except Chapter.DoesNotExist:
+            return self.error("章节不存在")
+        if ChapterProblem.objects.filter(chapter=chapter, display_id=data["display_id"]).exists():
+            return self.error("该题目已在章节中")
+        prob = ChapterProblem.objects.create(
+            chapter=chapter,
+            display_id=data["display_id"],
+            type=data.get("type", "exercise"),
+            order=data.get("order", 0),
+        )
+        return self.success(ChapterProblemSerializer(prob).data)
+
+    @validate_serializer(ChapterProblemEditSerializer)
+    @admin_role_required
+    def put(self, request):
+        data = request.data
+        try:
+            prob = ChapterProblem.objects.get(
+                chapter_id=data["chapter_id"],
+                chapter__course_id=data["course_id"],
+                display_id=data["display_id"]
+            )
+        except ChapterProblem.DoesNotExist:
+            return self.error("题目不存在于该章节")
+        if "type" in data:
+            prob.type = data["type"]
+        if "order" in data:
+            prob.order = data["order"]
+        prob.save()
+        return self.success(ChapterProblemSerializer(prob).data)
+
+    @admin_role_required
+    def delete(self, request):
+        chapter_id = request.GET.get("chapter_id")
+        course_id = request.GET.get("course_id")
+        display_id = request.GET.get("display_id")
+        if not all([chapter_id, display_id]):
+            return self.error("缺少参数")
+        try:
+            prob = ChapterProblem.objects.get(
+                chapter_id=chapter_id,
+                chapter__course_id=course_id,
+                display_id=display_id
+            )
+            prob.delete()
+            return self.success("移除成功")
+        except ChapterProblem.DoesNotExist:
+            return self.error("题目不存在于该章节")
+
+
+class MoveChapterProblemAdminAPI(APIView):
+    """移动题目到其他章节"""
+
+    @validate_serializer(ChapterProblemMoveSerializer)
+    @admin_role_required
+    def post(self, request):
+        data = request.data
+        try:
+            prob = ChapterProblem.objects.get(
+                chapter_id=data["from_chapter_id"],
+                chapter__course_id=data["course_id"],
+                display_id=data["display_id"]
+            )
+        except ChapterProblem.DoesNotExist:
+            return self.error("题目不存在于源章节")
+        try:
+            target_chapter = Chapter.objects.get(
+                id=data["to_chapter_id"],
+                course_id=data["course_id"]
+            )
+        except Chapter.DoesNotExist:
+            return self.error("目标章节不存在")
+        if ChapterProblem.objects.filter(chapter=target_chapter, display_id=data["display_id"]).exists():
+            return self.error("目标章节已包含该题目")
+        prob.chapter = target_chapter
+        prob.type = data.get("type", prob.type)
+        prob.save()
+        return self.success(ChapterProblemSerializer(prob).data)
+
+
+class ProblemTitlesAdminAPI(APIView):
+    """批量获取题目标题"""
+
+    @admin_role_required
+    def post(self, request):
+        ids = request.data.get("ids", [])
+        if not ids:
+            return self.success({})
+        from ..models import Problem
+        problems = Problem.objects.filter(_id__in=ids).values("_id", "title")
+        result = {p["_id"]: p["title"] for p in problems}
+        return self.success(result)
