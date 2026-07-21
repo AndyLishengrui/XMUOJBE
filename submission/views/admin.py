@@ -1,5 +1,5 @@
 from judge.tasks import judge_task
-# from judge.dispatcher import JudgeDispatcher
+from judge.dispatcher import JudgeDispatcher
 from utils.api import APIView
 from ..models import Submission
 
@@ -21,7 +21,8 @@ class SubmissionRejudgeAPI(APIView):
             return self.error("Permission denied")
 
         submission.statistic_info = {}
+        submission.info = {}
         submission.save()
 
-        judge_task.send(submission.id, submission.problem.id)
+        JudgeDispatcher(submission.id, submission.problem.id).judge()
         return self.success()

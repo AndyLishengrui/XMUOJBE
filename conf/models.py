@@ -18,7 +18,7 @@ class JudgeServer(models.Model):
     @property
     def status(self):
         # 增加一秒延时，提高对网络环境的适应性
-        if (timezone.now() - self.last_heartbeat).total_seconds() > 6:
+        if (timezone.now() - self.last_heartbeat).total_seconds() > 15:
             return "abnormal"
         return "normal"
 

@@ -8,15 +8,20 @@ from account.models import User
 
 
 class APITokenAuthMiddleware(MiddlewareMixin):
-    def process_request(self, request):
+    def _authenticate_by_appkey(self, request):
         appkey = request.META.get("HTTP_APPKEY")
-        if appkey:
-            try:
-                request.user = User.objects.get(open_api_appkey=appkey, open_api=True, is_disabled=False)
-                request.csrf_processing_done = True
-                request.auth_method = "api_key"
-            except User.DoesNotExist:
-                pass
+        if not appkey:
+            return False
+        try:
+            request.user = User.objects.get(open_api_appkey=appkey, open_api=True, is_disabled=False)
+            request.csrf_processing_done = True
+            request.auth_method = "api_key"
+            return True
+        except User.DoesNotExist:
+            pass
+
+    def process_request(self, request):
+        self._authenticate_by_appkey(request)
 
 
 class SessionRecordMiddleware(MiddlewareMixin):

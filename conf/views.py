@@ -165,7 +165,15 @@ class JudgeServerHeartbeatAPI(CSRFExemptAPIView):
 
 class LanguagesAPI(APIView):
     def get(self, request):
-        return self.success({"languages": SysOptions.languages, "spj_languages": SysOptions.spj_languages})
+        include_hidden = request.GET.get("include_hidden") in {"1", "true", "True"}
+        can_include_hidden = request.user.is_authenticated and request.user.is_admin_role()
+        if include_hidden and can_include_hidden:
+            languages = SysOptions.languages
+            spj_languages = SysOptions.spj_languages
+        else:
+            languages = SysOptions.visible_languages
+            spj_languages = SysOptions.visible_spj_languages
+        return self.success({"languages": languages, "spj_languages": spj_languages})
 
 
 class TestCasePruneAPI(APIView):

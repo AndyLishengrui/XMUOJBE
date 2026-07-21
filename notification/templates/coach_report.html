@@ -81,9 +81,18 @@
     var fbSubmitted = false;
     var FB_USER = '{{ recipient_username }}';
     var FB_PID = '{{ coach_problem_id }}';
+
+    // Auto-track view on page load (fire-and-forget)
+    if (FB_USER && FB_PID) {
+      fetch('/coach/reports/' + FB_USER + '/' + FB_PID + '/viewed', {
+        method: 'POST', credentials: 'include',
+        headers: {'Content-Type': 'application/json'},
+        body: '{}'
+      }).catch(function(){});
+    }
+
     function submitFeedback(type) {
       if (fbSubmitted) return;
-      fbSubmitted = true;
       var likeBtn = document.getElementById('fb-like');
       var dislikeBtn = document.getElementById('fb-dislike');
       likeBtn.disabled = true;
@@ -97,10 +106,10 @@
       .then(function(d){
         var msg = document.getElementById('fb-msg');
         if (d && d.ok) {
+          fbSubmitted = true;
           msg.textContent = type === 'like' ? '✓ 感谢反馈！' : '✓ 感谢反馈，我们会改进！';
           msg.style.color = '#19be6b';
         } else {
-          fbSubmitted = false;
           likeBtn.disabled = false;
           dislikeBtn.disabled = false;
           msg.textContent = '反馈失败，请重试';
@@ -109,7 +118,6 @@
         msg.style.display = 'inline';
       })
       .catch(function(){
-        fbSubmitted = false;
         likeBtn.disabled = false;
         dislikeBtn.disabled = false;
         var msg = document.getElementById('fb-msg');

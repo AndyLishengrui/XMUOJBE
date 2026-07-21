@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>通知管理 - Admin</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+       background: #f0f2f5; color: #333; padding: 20px; min-width: 1100px; }
+.container { max-width: 100%; margin: 0 auto; }
+.header { background: #fff; padding: 16px 24px; border-radius: 8px; margin-bottom: 16px;
+          box-shadow: 0 1px 3px rgba(0,0,0,.08); display:flex; justify-content:space-between; align-items:center; }
+.header h1 { font-size: 20px; color: #1a1a2e; }
+.header-links { display:flex; gap:12px; align-items:center; }
+.stats { display:flex; gap: 16px; margin-bottom: 16px; }
+.stat-card { background: #fff; padding: 16px 24px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.08);
+             flex:1; text-align:center; }
+.stat-card .num { font-size: 32px; font-weight: bold; color: #2d8cf0; }
+.stat-card .label { font-size: 13px; color: #999; margin-top: 4px; }
+.controls { background: #fff; padding: 12px 24px; border-radius: 8px; margin-bottom: 16px;
+            box-shadow: 0 1px 3px rgba(0,0,0,.08); display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+.controls input, .controls select { padding: 6px 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; }
+.controls input { width: 220px; }
+.table-wrap { background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.08); overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; min-width: 1100px; }
+th { background: #fafafa; padding: 12px 14px; text-align: left; font-size: 13px; color: #666;
+     border-bottom: 2px solid #e8eaec; white-space: nowrap; }
+td { padding: 10px 14px; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
+tr:hover { background: #f8f9ff; }
+/* Column widths */
+.col-id { width: 60px; }
+.col-title { min-width: 250px; }
+.col-sender { width: 100px; }
+.col-recip { width: 120px; }
+.col-status { width: 80px; }
+.col-time { width: 130px; white-space: nowrap; }
+.col-actions { min-width: 210px; white-space: nowrap; text-align: center; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; }
+.badge-read { background: #e8f5e9; color: #2e7d32; }
+.badge-unread { background: #fff3e0; color: #e65100; }
+.badge-deleted { background: #fce4ec; color: #c62828; }
+.btn { display: inline-block; padding: 5px 12px; border: 1px solid #ddd; border-radius: 4px;
+       cursor: pointer; font-size: 12px; text-decoration: none; margin: 0 2px; background: #fff;
+       white-space: nowrap; }
+.btn-detail { color: #722ed1; border-color: #722ed1; }
+.btn-detail:hover { background: #f3edfa; }
+.btn-view { color: #2d8cf0; border-color: #2d8cf0; }
+.btn-view:hover { background: #e8f0fe; }
+.btn-del { color: #ed4014; border-color: #ed4014; }
+.btn-del:hover { background: #fde8e4; }
+.btn-refresh { background: #2d8cf0; color: #fff; border-color: #2d8cf0; }
+.btn-back { background: #fff; color: #666; border-color: #ccc; }
+.bottom-bar { background: #fff; padding: 12px 24px; border-radius: 8px; margin-top: 16px;
+              box-shadow: 0 1px 3px rgba(0,0,0,.08); display:flex; justify-content:space-between;
+              align-items:center; flex-wrap:wrap; gap:12px; }
+.pagination { display:flex; align-items:center; gap: 6px; }
+.pagination a, .pagination span { display: inline-block; padding: 6px 10px; border: 1px solid #ddd;
+    border-radius: 4px; text-decoration: none; color: #333; font-size: 13px; }
+.pagination a.active { background: #2d8cf0; color: #fff; border-color: #2d8cf0; }
+.pagination a:hover:not(.active):not(.disabled) { background: #f0f0f0; }
+.pagination a.disabled { color: #ccc; cursor: default; pointer-events: none; }
+.page-size-select { padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; }
+.empty { text-align: center; padding: 40px; color: #999; }
+.title-link { color: #333; text-decoration: none; }
+.title-link:hover { color: #2d8cf0; }
+.info-text { font-size: 13px; color: #666; }
+</style>
+</head>
+<body>
+<div class="container">
+<div class="header">
+  <h1>📬 通知管理</h1>
+  <div class="header-links">
+    <span class="info-text">共 {{ total }} 条</span>
+    <a href="/admin/" class="btn btn-back">← 返回管理后台</a>
+  </div>
+</div>
+
+<div class="stats">
+  <div class="stat-card">
+    <div class="num">{{ total }}</div>
+    <div class="label">总通知数</div>
+  </div>
+  <div class="stat-card">
+    <div class="num">{{ unread }}</div>
+    <div class="label">未读</div>
+  </div>
+  <div class="stat-card">
+    <div class="num">{{ deleted }}</div>
+    <div class="label">已删除</div>
+  </div>
+</div>
+
+<div class="controls">
+  <form method="GET" style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+    <input type="text" name="search" value="{{ search }}" placeholder="搜索标题或接收人...">
+    <select name="status">
+      <option value="all" {% if status == 'all' %}selected{% endif %}>全部状态</option>
+      <option value="active" {% if status == 'active' %}selected{% endif %}>仅活跃</option>
+      <option value="deleted" {% if status == 'deleted' %}selected{% endif %}>仅已删除</option>
+      <option value="unread" {% if status == 'unread' %}selected{% endif %}>仅未读</option>
+    </select>
+    <input type="hidden" name="page_size" value="{{ page_size }}">
+    <button type="submit" class="btn btn-refresh">🔍 搜索</button>
+    <a href="?page_size={{ page_size }}" class="btn">重置</a>
+  </form>
+</div>
+
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+  <th class="col-id">ID</th>
+  <th class="col-title">标题</th>
+  <th class="col-sender">发送者</th>
+  <th class="col-recip">接收人</th>
+  <th class="col-status">状态</th>
+  <th class="col-time">创建时间</th>
+  <th class="col-actions">操作</th>
+</tr>
+</thead>
+<tbody>
+{% for n in notifications %}
+<tr>
+  <td class="col-id">{{ n.id }}</td>
+  <td class="col-title"><a href="/api/notification/{{ n.id }}/" target="_blank" class="title-link">{{ n.title|truncatechars:60 }}</a></td>
+  <td class="col-sender">{{ n.sender_name }}</td>
+  <td class="col-recip">{{ n.recipient_name }}</td>
+  <td class="col-status">
+    {% if n.is_deleted %}
+    <span class="badge badge-deleted">已删除</span>
+    {% elif n.is_read %}
+    <span class="badge badge-read">已读</span>
+    {% else %}
+    <span class="badge badge-unread">未读</span>
+    {% endif %}
+  </td>
+  <td class="col-time">{{ n.create_time|date:"Y-m-d H:i" }}</td>
+  <td class="col-actions">
+    <a href="/admin/noteDetail?id={{ n.id }}" class="btn btn-detail">📋 详情</a>
+    <a href="/api/notification/{{ n.id }}/" target="_blank" class="btn btn-view">👁 查看</a>
+    {% if not n.is_deleted %}
+    <button onclick="deleteNotif({{ n.id }})" class="btn btn-del">🗑 删除</button>
+    {% endif %}
+  </td>
+</tr>
+{% empty %}
+<tr><td colspan="7" class="empty">没有找到通知</td></tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+
+<div class="bottom-bar">
+  <div class="pagination">
+    {% if has_prev %}
+    <a href="?page={{ prev_page }}&search={{ search }}&status={{ status }}&page_size={{ page_size }}">← 上一页</a>
+    {% else %}
+    <a class="disabled">← 上一页</a>
+    {% endif %}
+
+    {% for p in page_range %}
+      {% if p == page %}
+      <a class="active">{{ p }}</a>
+      {% elif p == '...' %}
+      <span>...</span>
+      {% else %}
+      <a href="?page={{ p }}&search={{ search }}&status={{ status }}&page_size={{ page_size }}">{{ p }}</a>
+      {% endif %}
+    {% endfor %}
+
+    {% if has_next %}
+    <a href="?page={{ next_page }}&search={{ search }}&status={{ status }}&page_size={{ page_size }}">下一页 →</a>
+    {% else %}
+    <a class="disabled">下一页 →</a>
+    {% endif %}
+  </div>
+
+  <div style="display:flex; align-items:center; gap:8px;">
+    <span class="info-text">每页</span>
+    <select class="page-size-select" onchange="changePageSize(this.value)">
+      {% for s in page_size_options %}
+      <option value="{{ s }}" {% if s == page_size %}selected{% endif %}>{{ s }} 条</option>
+      {% endfor %}
+    </select>
+    <span class="info-text">第 {{ page }} / {{ total_pages }} 页</span>
+  </div>
+</div>
+
+</div>
+
+<script>
+// Get CSRF token from cookie (required for Django POST/PUT/DELETE)
+function getCookie(name) {
+  var value = '; ' + document.cookie;
+  var parts = value.split('; ' + name + '=');
+  if (parts.length === 2) return parts.pop().split(';').shift();
+  return '';
+}
+function changePageSize(size) {
+  var params = new URLSearchParams(window.location.search);
+  params.set('page_size', size);
+  params.set('page', '1');
+  window.location.search = params.toString();
+}
+function deleteNotif(id) {
+  if (!confirm('确定要删除通知 #' + id + ' 吗？')) return;
+  fetch('/api/admin/notification/?id=' + id, {
+    method: 'DELETE',
+    credentials: 'same-origin',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRFToken': getCookie('csrftoken')
+    }
+  }).then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.error) { alert('删除失败: ' + d.data); return; }
+      location.reload();
+    })
+    .catch(function(e) { alert('删除请求失败，请检查网络或权限'); });
+}
+</script>
+</body>
+</html>

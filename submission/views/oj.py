@@ -1,10 +1,16 @@
 import ipaddress
+import logging
+import json
+from urllib.parse import urljoin
+from django.db import DatabaseError
+from django.utils.timezone import now
+
+import requests
 
 from account.decorators import login_required, check_contest_permission
-from contest.models import ContestStatus, ContestRuleType
+from contest.models import ContestStatus, ContestRuleType, Contest, ACMContestRank, OIContestRank
 from judge.tasks import judge_task
 from options.options import SysOptions
-# from judge.dispatcher import JudgeDispatcher
 from problem.models import Problem, ProblemRuleType
 from utils.api import APIView, validate_serializer
 from utils.cache import cache
@@ -14,6 +20,8 @@ from ..models import Submission
 from ..serializers import (CreateSubmissionSerializer, SubmissionModelSerializer,
                            ShareSubmissionSerializer)
 from ..serializers import SubmissionSafeModelSerializer, SubmissionListSerializer
+
+logger = logging.getLogger(__name__)
 
 
 class SubmissionAPI(APIView):
@@ -232,7 +240,7 @@ class CoachReportAPI(APIView):
 
 
 class RunCodeAPI(APIView):
-    """Debug endpoint: compile and run code with custom input, no judging or submission recording."""
+    """Debug endpoint: compile and run code, same flow as submit but returns result directly."""
 
     @login_required
     def post(self, request):
@@ -256,6 +264,7 @@ class RunCodeAPI(APIView):
         if language not in problem.languages:
             return self.error(f"{language} is not allowed in this problem")
 
+        # Use same judge flow as SubmissionAPI (well-tested path)
         sub_config = list(filter(lambda item: language == item["name"], SysOptions.languages))[0]
         spj_config = {}
         if problem.spj_code:
@@ -269,42 +278,53 @@ class RunCodeAPI(APIView):
             "src": code,
             "max_cpu_time": problem.time_limit,
             "max_memory": 1024 * 1024 * problem.memory_limit,
-            "test_case_id": None,
-            "output": False,
+            "output": True,
             "spj_version": problem.spj_version,
             "spj_config": spj_config.get("config"),
             "spj_compile_config": spj_config.get("compile"),
             "spj_src": problem.spj_code,
             "io_mode": problem.io_mode,
-            "input": user_input,
         }
 
-        from conf.models import JudgeServer
-        server = JudgeServer.objects.filter(is_disabled=False).first()
-        if not server:
-            return self.error("No judge server available")
+        # Use custom input if provided, otherwise use problem's test cases
+        if user_input and user_input.strip():
+            data["test_case_id"] = None
+            data["test_case"] = [{"input": user_input, "output": ""}]
+        else:
+            data["test_case_id"] = problem.test_case_id
 
-        try:
-            resp = requests.post(
-                urljoin(server.service_url, "/judge"),
-                json=data,
-                headers={"X-Judge-Server-Token": server.token},
-                timeout=30
-            ).json()
-        except Exception as e:
-            logger.exception(f"Judge server error: {e}")
-            return self.error("Judge server error")
+        from conf.models import JudgeServer
+        from judge.dispatcher import ChooseJudgeServer
+        import hashlib
+
+        with ChooseJudgeServer() as server:
+            if not server:
+                return self.error("No judge server available")
+
+            token = hashlib.sha256(SysOptions.judge_server_token.encode("utf-8")).hexdigest()
+            try:
+                resp = requests.post(
+                    urljoin(server.service_url, "/judge"),
+                    json=data,
+                    headers={"X-Judge-Server-Token": token},
+                    timeout=30
+                ).json()
+            except Exception as e:
+                logger.exception(f"Judge server error: {e}")
+                return self.error("Judge server error")
 
         if resp.get("err"):
             return self.error(f"Compile error: {resp.get('data', '')}")
 
-        result_data = resp.get("data", [])
-        if result_data and len(result_data) > 0:
+        result_data = resp.get("data")
+        if result_data is None:
+            result_data = []
+        if len(result_data) > 0:
             output = result_data[0].get("output", "")
-            if len(output) > 1000:
+            if output and len(output) > 1000:
                 output = output[:1000] + "\n..."
             return self.success({
-                "output": output,
+                "output": output or "(no output)",
                 "time_cost": result_data[0].get("cpu_time", 0),
                 "memory_cost": result_data[0].get("memory", 0),
             })

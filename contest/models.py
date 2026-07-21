@@ -233,6 +233,20 @@ class ContestParticipation(models.Model):
 
                     derived_total_score = sum(best_scores.values())
                     total_score = max(total_score, derived_total_score)
+                    accepted_number = max(accepted_number, sum(1 for s in best_scores.values() if s > 0))
+                    # Write back corrected scores to OIContestRank
+                    if rank:
+                        rank_changed = False
+                        rank_info = dict(rank.submission_info or {})
+                        for pid, score in best_scores.items():
+                            old = rank_info.get(pid)
+                            if not isinstance(old, (int, float)) or old == 0:
+                                rank_info[pid] = score
+                                rank_changed = True
+                        if rank_changed:
+                            rank.submission_info = rank_info
+                            rank.total_score = sum(v for v in rank_info.values() if isinstance(v, (int, float)))
+                            rank.save(update_fields=["submission_info", "total_score"])
                     oi_status = profile.oi_problems_status or {}
                     contest_problems = oi_status.get("contest_problems", {})
                     for pid, score in best_scores.items():

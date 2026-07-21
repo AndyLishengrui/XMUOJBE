@@ -1,6 +1,4 @@
 import re
-import json
-import os
 from datetime import datetime
 from django.shortcuts import render
 from django.http import Http404
@@ -14,32 +12,6 @@ from notification.utils import (
     get_notification_relative_url,
     resolve_problem_url,
 )
-
-# Load coach submission mapping (problem_id -> [submissions])
-_coach_submissions_path = '/data/coach_submissions.json'
-
-def _load_coach_submissions():
-    """Load the cached coach submission mapping."""
-    if os.path.exists(_coach_submissions_path):
-        with open(_coach_submissions_path, 'r') as f:
-            return json.load(f)
-    return {}
-
-def _get_submission_links(problem_id):
-    """Return a list of {sid, user, url} dicts for a given problem_id."""
-    mapping = _load_coach_submissions()
-    entries = mapping.get(problem_id, [])
-    links = []
-    for entry in entries:
-        sid = entry.get('sid', '')
-        user = entry.get('user', '')
-        links.append({
-            'sid': sid,
-            'user': user,
-            'url': f'/status/{sid}',
-        })
-    return links
-
 
 class NotificationListAPI(APIView):
     @login_required
@@ -163,13 +135,13 @@ class NotificationDetailView(APIView):
         # Use the centralized URL resolver (handles standalone vs contest)
         problem_link = resolve_problem_url(problem_id) if problem_id else ''
 
-        # Look up coach submission links from the mapping
-        submission_links = _get_submission_links(problem_id) if problem_id else []
-
-        # Always include the notification's own link as the primary submission link
+        # Build a single submission link from the notification's own link field
+        # We do NOT use _get_submission_links(problem_id) here because it returns
+        # ALL students' submissions for the problem — a privacy leak on student-facing pages.
+        submission_links = []
         own_link = notification.link.strip() if notification.link else ''
-        if own_link and not any(s.get('url') == own_link for s in submission_links):
-            submission_links.insert(0, {
+        if own_link:
+            submission_links.append({
                 'sid': own_link.rstrip('/').split('/')[-1],
                 'user': notification.recipient.username,
                 'url': own_link,

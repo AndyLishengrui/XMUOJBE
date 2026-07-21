@@ -1,5 +1,7 @@
 from rest_framework import serializers
 
+from account.models import UserProfile
+
 
 class UsernameSerializer(serializers.Serializer):
     id = serializers.IntegerField()
@@ -11,4 +13,9 @@ class UsernameSerializer(serializers.Serializer):
         super().__init__(*args, **kwargs)
 
     def get_real_name(self, obj):
-        return obj.userprofile.real_name if self.need_real_name else None
+        if not self.need_real_name:
+            return None
+        try:
+            return obj.userprofile.real_name
+        except UserProfile.DoesNotExist:
+            return ""

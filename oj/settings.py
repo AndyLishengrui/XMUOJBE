@@ -45,12 +45,14 @@ LOCAL_APPS = [
     'account',
     'announcement',
     'conf',
+    'message',
     'problem',
     'contest',
     'utils',
     'submission',
     'options',
     'judge',
+    'notification',
 ]
 
 INSTALLED_APPS = VENDOR_APPS + LOCAL_APPS

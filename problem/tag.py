@@ -8,6 +8,9 @@ from utils.api import APIError
 from .models import Problem, ProblemTag
 
 
+DEFAULT_PROBLEM_TAG = "toTag"
+
+
 def clean_tag_name(name):
     if name is None:
         return ""
@@ -116,6 +119,16 @@ def assign_problem_tags(problem, tag_names, allow_create=False):
     return resolved_tags, collisions
 
 
+def ensure_problem_has_default_tag(problem, default_tag_name=DEFAULT_PROBLEM_TAG):
+    if problem.tags.exists():
+        return list(problem.tags.all())
+    resolved_tags, invalid_tags, collisions = resolve_problem_tags([default_tag_name], allow_create=True)
+    if invalid_tags or not resolved_tags:
+        raise APIError("Failed to create default tag", err="invalid-tags")
+    problem.tags.set(resolved_tags)
+    return resolved_tags, collisions
+
+
 @transaction.atomic
 def merge_problem_tags(target_tag, source_tags):
     source_tags = [tag for tag in source_tags if tag.id != target_tag.id]
@@ -146,8 +159,11 @@ def merge_problem_tags(target_tag, source_tags):
 @transaction.atomic
 def delete_problem_tag(tag):
     through_model = Problem.tags.through
+    problem_ids = list(through_model.objects.filter(problemtag_id=tag.id).values_list("problem_id", flat=True).distinct())
     through_model.objects.filter(problemtag_id=tag.id).delete()
     tag.delete()
+    for problem in Problem.objects.filter(id__in=problem_ids):
+        ensure_problem_has_default_tag(problem)
 
 
 def serialize_problem_tag_audit(low_frequency_threshold=2):
