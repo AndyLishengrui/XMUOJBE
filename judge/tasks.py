@@ -6,7 +6,7 @@ from judge.dispatcher import JudgeDispatcher
 from utils.shortcuts import DRAMATIQ_WORKER_ARGS
 
 
-@dramatiq.actor(**DRAMATIQ_WORKER_ARGS())
+@dramatiq.actor(**DRAMATIQ_WORKER_ARGS(max_retries=1))
 def judge_task(submission_id, problem_id):
     uid = Submission.objects.get(id=submission_id).user_id
     if User.objects.get(id=uid).is_disabled:

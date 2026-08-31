@@ -24,7 +24,7 @@ class CreateSampleSerializer(serializers.Serializer):
 
 class CreateTestCaseScoreSerializer(serializers.Serializer):
     input_name = serializers.CharField(max_length=32)
-    output_name = serializers.CharField(max_length=32)
+    output_name = serializers.CharField(max_length=32, allow_blank=True, allow_null=True)
     score = serializers.IntegerField(min_value=0)
 
 
@@ -53,7 +53,7 @@ class CreateOrEditProblemSerializer(serializers.Serializer):
     input_description = serializers.CharField()
     output_description = serializers.CharField()
     samples = serializers.ListField(child=CreateSampleSerializer(), allow_empty=False)
-    test_case_id = serializers.CharField(max_length=32)
+    test_case_id = serializers.CharField(max_length=64)
     test_case_score = serializers.ListField(child=CreateTestCaseScoreSerializer(), allow_empty=True)
     time_limit = serializers.IntegerField(min_value=1, max_value=1000 * 60)
     memory_limit = serializers.IntegerField(min_value=1, max_value=1024)
@@ -67,7 +67,7 @@ class CreateOrEditProblemSerializer(serializers.Serializer):
     spj_compile_ok = serializers.BooleanField(default=False)
     visible = serializers.BooleanField()
     difficulty = serializers.ChoiceField(choices=Difficulty.choices())
-    tags = serializers.ListField(child=serializers.CharField(max_length=32), allow_empty=False)
+    tags = serializers.ListField(child=serializers.CharField(max_length=32), allow_empty=True)
     hint = serializers.CharField(allow_blank=True, allow_null=True)
     source = serializers.CharField(max_length=256, allow_blank=True, allow_null=True)
     share_submission = serializers.BooleanField()
@@ -288,7 +288,7 @@ class FormatValueSerializer(serializers.Serializer):
 class TestCaseScoreSerializer(serializers.Serializer):
     score = serializers.IntegerField(min_value=1)
     input_name = serializers.CharField(max_length=32)
-    output_name = serializers.CharField(max_length=32)
+    output_name = serializers.CharField(max_length=32, allow_blank=True, allow_null=True)
 
 
 class TemplateSerializer(serializers.Serializer):

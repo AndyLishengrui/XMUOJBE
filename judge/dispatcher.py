@@ -235,9 +235,14 @@ class JudgeDispatcher(DispatcherBase):
                 logger.info(
                     "Contest debug mode, id: " + str(self.contest_id) + ", submission id: " + self.submission.id)
                 return
-            with transaction.atomic():
-                self.update_contest_problem_status()
-                self.update_contest_rank()
+            try:
+                with transaction.atomic():
+                    self.update_contest_problem_status()
+                    self.update_contest_rank()
+            except Exception:
+                logger.exception(
+                    "Failed to update contest rank/problem status. "
+                    f"submission={self.submission.id} contest={self.contest_id}")
         else:
             if self.last_result:
                 self.update_problem_status_rejudge()
@@ -255,9 +260,10 @@ class JudgeDispatcher(DispatcherBase):
             problem = Problem.objects.select_for_update().get(contest_id=self.contest_id, id=self.problem.id)
             if self.last_result != JudgeStatus.ACCEPTED and self.submission.result == JudgeStatus.ACCEPTED:
                 problem.accepted_number += 1
-            problem_info = problem.statistic_info
+            problem_info = problem.statistic_info if isinstance(problem.statistic_info, dict) else {}
             problem_info[self.last_result] = problem_info.get(self.last_result, 1) - 1
             problem_info[result] = problem_info.get(result, 0) + 1
+            problem.statistic_info = problem_info
             problem.save(update_fields=["accepted_number", "statistic_info"])
 
             profile = User.objects.select_for_update().get(id=self.submission.user_id).userprofile
@@ -293,8 +299,9 @@ class JudgeDispatcher(DispatcherBase):
             problem.submission_number += 1
             if self.submission.result == JudgeStatus.ACCEPTED:
                 problem.accepted_number += 1
-            problem_info = problem.statistic_info
+            problem_info = problem.statistic_info if isinstance(problem.statistic_info, dict) else {}
             problem_info[result] = problem_info.get(result, 0) + 1
+            problem.statistic_info = problem_info
             problem.save(update_fields=["accepted_number", "submission_number", "statistic_info"])
 
             # update_userprofile
@@ -367,8 +374,9 @@ class JudgeDispatcher(DispatcherBase):
 
             problem = Problem.objects.select_for_update().get(contest_id=self.contest_id, id=self.problem.id)
             result = str(self.submission.result)
-            problem_info = problem.statistic_info
+            problem_info = problem.statistic_info if isinstance(problem.statistic_info, dict) else {}
             problem_info[result] = problem_info.get(result, 0) + 1
+            problem.statistic_info = problem_info
             problem.submission_number += 1
             if self.submission.result == JudgeStatus.ACCEPTED:
                 problem.accepted_number += 1
@@ -445,6 +453,8 @@ class JudgeDispatcher(DispatcherBase):
             rank.total_score = rank.total_score - last_score + current_score
         else:
             rank.total_score = rank.total_score + current_score
-        rank.submission_info[problem_id] = current_score
+        info = rank.submission_info
+        info[problem_id] = current_score
+        rank.submission_info = info
         rank.submission_number += 1
         rank.save()
