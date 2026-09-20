@@ -297,21 +297,33 @@ class RunCodeAPI(APIView):
         from judge.dispatcher import ChooseJudgeServer
         import hashlib
 
-        with ChooseJudgeServer() as server:
-            if not server:
-                return self.error("No judge server available")
+        token = hashlib.sha256(SysOptions.judge_server_token.encode("utf-8")).hexdigest()
+        # 判活有 15 秒窗口：选中的判题机可能刚好挂掉。换一台重试，
+        # 而不是让学生看到 "Judge server error"（这里没有重试，碰上一次就白跑）。
+        tried_urls = set()
+        resp = None
+        last_error = None
+        while resp is None and len(tried_urls) < 3:
+            with ChooseJudgeServer(exclude_urls=tried_urls) as server:
+                if not server:
+                    break
+                tried_urls.add(server.service_url)
+                try:
+                    resp = requests.post(
+                        urljoin(server.service_url, "/judge"),
+                        json=data,
+                        headers={"X-Judge-Server-Token": token},
+                        timeout=30
+                    ).json()
+                except Exception as e:
+                    last_error = e
+                    logger.warning(f"Judge server {server.service_url} unreachable, retrying: {e}")
 
-            token = hashlib.sha256(SysOptions.judge_server_token.encode("utf-8")).hexdigest()
-            try:
-                resp = requests.post(
-                    urljoin(server.service_url, "/judge"),
-                    json=data,
-                    headers={"X-Judge-Server-Token": token},
-                    timeout=30
-                ).json()
-            except Exception as e:
-                logger.exception(f"Judge server error: {e}")
-                return self.error("Judge server error")
+        if resp is None:
+            if not tried_urls:
+                return self.error("No judge server available")
+            logger.error(f"Judge server error: {last_error}")
+            return self.error("Judge server error")
 
         if resp.get("err"):
             return self.error(f"Compile error: {resp.get('data', '')}")

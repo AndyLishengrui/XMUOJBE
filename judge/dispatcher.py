@@ -73,13 +73,15 @@ def process_pending_task():
 
 
 class ChooseJudgeServer:
-    def __init__(self):
+    def __init__(self, exclude_urls=None):
         self.server = None
+        # 已经试过但连不上的判题机：判活有 15 秒窗口，刚被选中的机器可能已经挂了
+        self.exclude_urls = set(exclude_urls or [])
 
     def __enter__(self) -> [JudgeServer, None]:
         with transaction.atomic():
             servers = JudgeServer.objects.select_for_update().filter(is_disabled=False).order_by("task_number")
-            servers = [s for s in servers if s.status == "normal"]
+            servers = [s for s in servers if s.status == "normal" and s.service_url not in self.exclude_urls]
             for server in servers:
                 if server.task_number <= server.cpu_core * 2:
                     server.task_number = F("task_number") + 1
@@ -190,19 +192,32 @@ class JudgeDispatcher(DispatcherBase):
             "io_mode": self.problem.io_mode
         }
 
-        with ChooseJudgeServer() as server:
-            if not server:
-                # 评测机繁忙，等待 1s 重试一次
-                import time as _time
-                _time.sleep(1)
-                with ChooseJudgeServer() as server2:
-                    if not server2:
-                        return
-                    server = server2
-            Submission.objects.filter(id=self.submission.id).update(result=JudgeStatus.JUDGING)
-            resp = self._request(urljoin(server.service_url, "/judge"), data=data)
+        # 判活有 15 秒窗口：选中的判题机可能刚好挂掉，此时 _request 返回 None。
+        # 换一台重试，而不是直接把这份提交判成 SYSTEM_ERROR（学生看到的是"系统错误"且不会重试）。
+        tried_urls = set()
+        resp = None
+        waited_for_server = False
+        while resp is None and len(tried_urls) < 3:
+            with ChooseJudgeServer(exclude_urls=tried_urls) as server:
+                if not server:
+                    if waited_for_server or tried_urls:
+                        break
+                    # 评测机繁忙，等待 1s 重试一次
+                    waited_for_server = True
+                    import time as _time
+                    _time.sleep(1)
+                    continue
+                tried_urls.add(server.service_url)
+                Submission.objects.filter(id=self.submission.id).update(result=JudgeStatus.JUDGING)
+                resp = self._request(urljoin(server.service_url, "/judge"), data=data)
+            if resp is None:
+                logger.warning("Judge server %s unreachable, retrying on another server",
+                               server.service_url)
 
         if not resp:
+            if not tried_urls:
+                # 一台可用判题机都没有：保持 PENDING，等机器上线后由 process_pending_task 捞起
+                return
             Submission.objects.filter(id=self.submission.id).update(result=JudgeStatus.SYSTEM_ERROR)
             return
 
