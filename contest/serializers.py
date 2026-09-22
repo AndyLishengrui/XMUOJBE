@@ -31,7 +31,8 @@ class EditConetestSeriaizer(serializers.Serializer):
 
 
 class ContestAdminSerializer(serializers.ModelSerializer):
-    created_by = UsernameSerializer()
+    # need_real_name：比赛列表要显示「任课老师」的中文名（学生端筛选/识别用）
+    created_by = UsernameSerializer(need_real_name=True)
     status = serializers.CharField()
     contest_type = serializers.CharField()
 

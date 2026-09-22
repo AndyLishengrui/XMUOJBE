@@ -1,6 +1,7 @@
 import io
 
 import xlsxwriter
+from django.db.models import Q
 from django.http import HttpResponse
 from django.utils.timezone import now
 from django.core.cache import cache
@@ -61,12 +62,23 @@ class ContestAPI(APIView):
 
 class ContestListAPI(APIView):
     def get(self, request):
-        contests = Contest.objects.select_related("created_by").filter(visible=True)
+        contests = Contest.objects.select_related(
+            "created_by", "created_by__userprofile").filter(visible=True)
         keyword = request.GET.get("keyword")
         rule_type = request.GET.get("rule_type")
         status = request.GET.get("status")
+        owner = request.GET.get("owner")
         if keyword:
-            contests = contests.filter(title__contains=keyword)
+            # 关键词除了标题，也匹配「创建者（任课老师）」的用户名/姓名，
+            # 这样学生可以直接在比赛列表的搜索框里输入老师名字筛出自己班的实验，
+            # 例如 /contest?keyword=曾鸣
+            contests = contests.filter(Q(title__icontains=keyword) |
+                                       Q(created_by__username__icontains=keyword) |
+                                       Q(created_by__userprofile__real_name__icontains=keyword))
+        if owner:
+            # 与后台比赛列表同款的「按老师过滤」
+            contests = contests.filter(Q(created_by__username__icontains=owner) |
+                                       Q(created_by__userprofile__real_name__icontains=owner))
         if rule_type:
             contests = contests.filter(rule_type=rule_type)
         if status:
