@@ -308,7 +308,8 @@ class ResetUserPasswordAPI(APIView):
         """
         Reset a user's password.
         Super Admin: can reset any user's password.
-        Admin: can only reset Regular User passwords (not Admin or Super Admin).
+        Admin: can reset their own password, and Regular Users' passwords
+               (but not other Admin / Super Admin accounts).
         """
         data = request.data
         try:
@@ -316,8 +317,10 @@ class ResetUserPasswordAPI(APIView):
         except User.DoesNotExist:
             return self.error("User does not exist")
 
-        # Admin (non-super-admin) cannot reset passwords of admin-role users
-        if not request.user.is_super_admin() and user.is_admin_role():
+        # Admin (non-super-admin) cannot reset passwords of OTHER admin-role users.
+        # Resetting your own password is always allowed -- it is not a privilege
+        # escalation, since you are already authenticated as that same user.
+        if not request.user.is_super_admin() and user.is_admin_role() and user.id != request.user.id:
             return self.error("You do not have permission to reset this user's password")
 
         user.set_password(data["new_password"])

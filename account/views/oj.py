@@ -292,14 +292,25 @@ class ApplyResetPasswordAPI(APIView):
         data = request.data
         captcha = Captcha(request)
         if not captcha.check(data["captcha"]):
-            return self.error("Invalid captcha")
+            return self.error("验证码错误，请重新输入。 / Incorrect captcha, please try again.")
         try:
             user = User.objects.get(email__iexact=data["email"])
         except User.DoesNotExist:
-            return self.error("User does not exist")
+            # 站内大量账号没有（或填的是假）邮箱，学生只会看到一句英文的 "User does not
+            # exist" 而不知所措，这里直接给出可执行的下一步。中英双语：站内有留学生。
+            return self.error("邮箱有误：系统中没有使用该邮箱注册的账号，无法自动重置密码，"
+                              "请联系任课老师人工重置。 / Incorrect email: no account is registered "
+                              "with this address. Automatic password reset is unavailable - please "
+                              "ask your teacher to reset it for you.")
+        except User.MultipleObjectsReturned:
+            # 多个账号共用一个邮箱时不能猜是哪一个，否则会把重置链接发到别人的账号上
+            return self.error("该邮箱关联了多个账号，无法自动重置密码，请联系任课老师人工重置。 / "
+                              "This email is linked to multiple accounts. Please ask your teacher to "
+                              "reset your password manually.")
         if user.reset_password_token_expire_time and 0 < int(
                 (user.reset_password_token_expire_time - now()).total_seconds()) < 20 * 60:
-            return self.error("You can only reset password once per 20 minutes")
+            return self.error("20 分钟内只能申请一次重置密码，请稍后再试。 / You can only request a "
+                              "password reset once every 20 minutes, please try again later.")
         user.reset_password_token = rand_str()
         user.reset_password_token_expire_time = now() + timedelta(minutes=20)
         user.save()
@@ -309,11 +320,12 @@ class ApplyResetPasswordAPI(APIView):
             "link": f"{SysOptions.website_base_url}/reset-password/{user.reset_password_token}"
         }
         email_html = render_to_string("reset_password_email.html", render_data)
-        admin_email = SysOptions.smtp_config.get("email", "") if SysOptions.smtp_config else ""
+        # 重置链接发到申请人自己填的邮箱（上游原版设计）。能打开这个邮箱 = 能拿到链接，
+        # 这正是该流程的安全性来源；发给站长邮箱则等于把所有人的重置权交给了站长。
         send_email_async.send(from_name=SysOptions.website_name_shortcut,
-                              to_email=admin_email,
+                              to_email=user.email,
                               to_name=user.username,
-                              subject=f"Reset password request: {user.username}",
+                              subject="Reset your password",
                               content=email_html)
         return self.success("Succeeded")
 
@@ -324,13 +336,15 @@ class ResetPasswordAPI(APIView):
         data = request.data
         captcha = Captcha(request)
         if not captcha.check(data["captcha"]):
-            return self.error("Invalid captcha")
+            return self.error("验证码错误，请重新输入。 / Incorrect captcha, please try again.")
         try:
             user = User.objects.get(reset_password_token=data["token"])
         except User.DoesNotExist:
-            return self.error("Token does not exist")
+            return self.error("重置链接无效或已被使用，请重新申请。 / This reset link is invalid or "
+                              "has already been used, please apply again.")
         if user.reset_password_token_expire_time < now():
-            return self.error("Token has expired")
+            return self.error("重置链接已过期（有效期 20 分钟），请重新申请。 / This reset link has "
+                              "expired (valid for 20 minutes), please apply again.")
         user.reset_password_token = None
         user.two_factor_auth = False
         user.set_password(data["password"])
