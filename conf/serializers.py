@@ -26,6 +26,9 @@ class CreateEditWebsiteConfigSerializer(serializers.Serializer):
     website_footer = serializers.CharField(max_length=1024 * 1024)
     allow_register = serializers.BooleanField()
     submission_list_show_all = serializers.BooleanField()
+    # ⚠️ 只写 required=False、**不给 default**：旧版后台页面（缓存里的 JS）不带这个字段时，
+    #    validated_data 里就不会有它，post 的 setattr 循环会跳过 -> 不会把设置悄悄重置。
+    show_problem_links = serializers.BooleanField(required=False)
 
 
 class JudgeServerSerializer(serializers.ModelSerializer):

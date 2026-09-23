@@ -99,6 +99,7 @@ class OptionKeys:
     website_footer = "website_footer"
     allow_register = "allow_register"
     submission_list_show_all = "submission_list_show_all"
+    show_problem_links = "show_problem_links"
     smtp_config = "smtp_config"
     judge_server_token = "judge_server_token"
     throttling = "throttling"
@@ -112,6 +113,8 @@ class OptionDefaultValue:
     website_footer = "Online Judge Footer"
     allow_register = True
     submission_list_show_all = True
+    # 公共题库是否向学生展示「参考题解 / 原题链接 / 提示里的图片」（全局设置）
+    show_problem_links = False
     smtp_config = {}
     judge_server_token = default_token
     throttling = {"ip": {"capacity": 100, "fill_rate": 0.1, "default_capacity": 50},
@@ -220,6 +223,14 @@ class _SysOptionsMeta(type):
     @allow_register.setter
     def allow_register(cls, value):
         cls._set_option(OptionKeys.allow_register, value)
+
+    @my_property
+    def show_problem_links(cls):
+        return cls._get_option(OptionKeys.show_problem_links)
+
+    @show_problem_links.setter
+    def show_problem_links(cls, value):
+        cls._set_option(OptionKeys.show_problem_links, value)
 
     @my_property(ttl=DEFAULT_SHORT_TTL)
     def submission_list_show_all(cls):

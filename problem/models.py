@@ -87,6 +87,8 @@ class Problem(models.Model):
     # {JudgeStatus.ACCEPTED: 3, JudgeStaus.WRONG_ANSWER: 11}, the number means count
     statistic_info = JSONField(default=dict)
     share_submission = models.BooleanField(default=False)
+    # None=继承所属实验/题库设置；True=强制显示；False=强制隐藏
+    show_links = models.NullBooleanField(default=None)
 
     class Meta:
         db_table = "problem"

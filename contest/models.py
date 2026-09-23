@@ -25,6 +25,8 @@ class Contest(models.Model):
     visible = models.BooleanField(default=True)
     allowed_ip_ranges = JSONField(default=list)
     is_exam = models.BooleanField(default=False)
+    # 是否向学生展示题目里的「参考题解 / 原题链接」（实验级；题目级可覆盖）
+    show_problem_links = models.BooleanField(default=False)
 
     @property
     def status(self):

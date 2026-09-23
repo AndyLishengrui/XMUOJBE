@@ -71,6 +71,8 @@ class CreateOrEditProblemSerializer(serializers.Serializer):
     hint = serializers.CharField(allow_blank=True, allow_null=True)
     source = serializers.CharField(max_length=256, allow_blank=True, allow_null=True)
     share_submission = serializers.BooleanField()
+    # 三态：不传=不改动（避免旧版后台把已有覆盖清空）
+    show_links = serializers.NullBooleanField(required=False)
     allow_public_test_case_download = serializers.BooleanField(required=False, default=False)
 
 
@@ -176,28 +178,47 @@ class BaseProblemSerializer(serializers.ModelSerializer):
         return ret
 
 
+from .links import LinksPolicy
+
+
+class ShowProblemLinksMixin(object):
+    """按 links_policy 决定 hint 里是否保留「参考题解/原题链接」（见 problem/links.py）。
+
+    没传 links_policy 时用安全默认（隐藏），保证任何新调用点都不会漏出去。
+    """
+
+    def __init__(self, *args, **kwargs):
+        self.links_policy = kwargs.pop("links_policy", None) or LinksPolicy()
+        super(ShowProblemLinksMixin, self).__init__(*args, **kwargs)
+
+    def get_hint(self, obj):
+        return self.links_policy.hint(obj)
+
+
 class ProblemAdminSerializer(BaseProblemSerializer):
     class Meta:
         model = Problem
         fields = "__all__"
 
 
-class ProblemSerializer(BaseProblemSerializer):
+class ProblemSerializer(ShowProblemLinksMixin, BaseProblemSerializer):
     template = serializers.SerializerMethodField("get_public_template")
+    hint = serializers.SerializerMethodField()
 
     class Meta:
         model = Problem
         exclude = ("test_case_score", "test_case_id", "visible", "is_public",
-                   "spj_code", "spj_version", "spj_compile_ok")
+                   "spj_code", "spj_version", "spj_compile_ok", "show_links")
 
 
-class ProblemSafeSerializer(BaseProblemSerializer):
+class ProblemSafeSerializer(ShowProblemLinksMixin, BaseProblemSerializer):
     template = serializers.SerializerMethodField("get_public_template")
+    hint = serializers.SerializerMethodField()
 
     class Meta:
         model = Problem
         exclude = ("test_case_score", "test_case_id", "visible", "is_public",
-                   "spj_code", "spj_version", "spj_compile_ok",
+                   "spj_code", "spj_version", "spj_compile_ok", "show_links",
                    "difficulty", "submission_number", "accepted_number", "statistic_info")
 
 

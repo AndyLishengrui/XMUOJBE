@@ -78,9 +78,24 @@ class PluginProblemSummarySerializer(serializers.ModelSerializer):
         )
 
 
-class PluginProblemDetailSerializer(PluginProblemSummarySerializer):
+from problem.links import LinksPolicy
+
+
+class ShowProblemLinksMixin(object):
+    """见 problem/links.py：按 links_policy 决定 hint 里是否保留外部链接。"""
+
+    def __init__(self, *args, **kwargs):
+        self.links_policy = kwargs.pop("links_policy", None) or LinksPolicy()
+        super(ShowProblemLinksMixin, self).__init__(*args, **kwargs)
+
+    def get_hint(self, obj):
+        return self.links_policy.hint(obj)
+
+
+class PluginProblemDetailSerializer(ShowProblemLinksMixin, PluginProblemSummarySerializer):
     template = serializers.SerializerMethodField("get_public_template")
     created_by = UsernameSerializer()
+    hint = serializers.SerializerMethodField()
 
     class Meta:
         model = Problem

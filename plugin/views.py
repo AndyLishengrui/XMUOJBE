@@ -9,6 +9,7 @@ from django.http import StreamingHttpResponse
 from wsgiref.util import FileWrapper
 
 from account.decorators import login_required, check_contest_password
+from problem.links import LinksPolicy
 from contest.models import Contest, ContestStatus, ContestRuleType, ContestType
 from judge.tasks import judge_task
 from options.options import SysOptions
@@ -257,7 +258,10 @@ class PluginProblemWorkspaceAPI(APIView, ContestAccessMixin, ProblemStatusMixin)
         if not problem:
             return self.error("Problem does not exist")
 
-        problem_data = PluginProblemDetailSerializer(problem).data
+        problem_data = PluginProblemDetailSerializer(
+            problem, links_policy=LinksPolicy.for_user(
+                request.user, contest=problem.contest if problem.contest_id else None,
+                problem=problem)).data
         problem_data["can_download_test_case"] = is_problem_public_test_case_download_enabled(problem)
         self.add_problem_status(request, [problem_data], rule_type=contest.rule_type if contest else None,
                                 contest_mode=contest is not None)

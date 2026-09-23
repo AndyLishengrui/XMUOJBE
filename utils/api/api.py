@@ -110,7 +110,7 @@ class APIView(View):
     def server_error(self):
         return self.error(err="server-error", msg="server error")
 
-    def paginate_data(self, request, query_set, object_serializer=None):
+    def paginate_data(self, request, query_set, object_serializer=None, **serializer_kwargs):
         """
         :param request: django的request
         :param query_set: django model的query set或者其他list like objects
@@ -132,7 +132,7 @@ class APIView(View):
         results = query_set[offset:offset + limit]
         if object_serializer:
             count = query_set.count()
-            results = object_serializer(results, many=True).data
+            results = object_serializer(results, many=True, **serializer_kwargs).data
         else:
             count = query_set.count()
         data = {"results": results,
