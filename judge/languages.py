@@ -120,7 +120,7 @@ class Main {
         "max_cpu_time": 5000,
         "max_real_time": 10000,
         "max_memory": -1,
-        "compile_command": "/usr/bin/javac {src_path} -d {exe_dir}"
+        "compile_command": "/usr/bin/javac -encoding UTF-8 {src_path} -d {exe_dir}"
     },
     "run": {
         "command": "/usr/bin/java -cp {exe_dir} -XX:MaxRAM={max_memory}k Main",
