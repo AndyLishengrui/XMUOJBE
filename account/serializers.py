@@ -201,35 +201,21 @@ class RankInfoSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = UserProfile
-        fields = "__all__"
-
+        # 排行榜前端只用 user/mood/total_score/accepted_number/submission_number/real_name。
+        # 原来 fields = "__all__" 会把每个用户完整的做题状态 JSON 原样吐出去（单人 34KB），
+        # 一页 30 人 = 4.6MB 响应体。只摘掉这两个大字段，其余字段一律保持原样。
+        exclude = ("acm_problems_status", "oi_problems_status")
 
     def get_accepted_number(self, obj):
-        count = obj.accepted_number
-        acm = obj.acm_problems_status or {}
-        oi = obj.oi_problems_status or {}
-        for container in [acm, oi]:
-            cps = container.get("contest_problems", {}) or {}
-            for pid, info in cps.items():
-                if isinstance(info, dict) and info.get("status") == 0:
-                    count += 1
-        return count
+        # 视图已按全站口径算好（含比赛 AC），这里直接取，避免每行再查库
+        return getattr(obj, "_combined_ac", obj.accepted_number)
 
     def get_submission_number(self, obj):
-        from contest.models import OIContestRank, ACMContestRank
-        contest_sub = 0
-        for model in [OIContestRank, ACMContestRank]:
-            for r in model.objects.filter(user=obj.user):
-                contest_sub += r.submission_number or 0
-        return obj.submission_number + contest_sub
+        return getattr(obj, "_combined_submission", obj.submission_number)
 
     def get_real_name(self, obj):
         show = self.context.get("is_admin", False)
         return obj.real_name if show else None
 
     def get_total_score(self, obj):
-        from contest.models import OIContestRank
-        score = obj.total_score
-        for r in OIContestRank.objects.filter(user=obj.user):
-            score += r.total_score or 0
-        return score
+        return getattr(obj, "_combined_score", obj.total_score)
