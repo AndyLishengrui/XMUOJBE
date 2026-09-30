@@ -80,8 +80,18 @@ class ChooseJudgeServer:
 
     def __enter__(self) -> [JudgeServer, None]:
         with transaction.atomic():
-            servers = JudgeServer.objects.select_for_update().filter(is_disabled=False).order_by("task_number")
-            servers = [s for s in servers if s.status == "normal" and s.service_url not in self.exclude_urls]
+            # 按主键顺序加锁：原来的 order_by("task_number") 排序键会被并发的 +1/-1 改写，
+            # 两个事务可能按不同顺序拿行锁 → 加锁顺序反转死锁
+            # （PG 报 deadlock detected ... relation "judge_server"）。
+            # 这里只固定「加锁顺序」，挑机语义不变：下面仍按 task_number 升序选负载最低的。
+            servers = [s for s in JudgeServer.objects.select_for_update()
+                       .filter(is_disabled=False).order_by("id")
+                       if s.status == "normal" and s.service_url not in self.exclude_urls]
+            # 挑机以判题机自报的 cpu_usage 为主：它由心跳每十几秒权威上报、不会漂移；
+            # 而 task_number 是本地计数器，进程被杀/死锁回滚会留下永久偏移，
+            # 实测偏移差可达 5 而真实在飞只有 0~2 —— 只按它会变成「被噪声支配」。
+            # 并列时再比 task_number；下面的容量闸仍用 task_number。
+            servers.sort(key=lambda s: (s.cpu_usage, s.task_number))
             for server in servers:
                 if server.task_number <= server.cpu_core * 2:
                     server.task_number = F("task_number") + 1
