@@ -396,10 +396,81 @@ class SessionManagementAPI(APIView):
 
 
 class UserRankAPI(APIView):
+    # 算一次全站排名要 ~1.5 秒，而名次本身最多滞后几十秒也无所谓
+    RANK_TTL = 20
+    RANK_CACHE_KEY = "user_rank:list:v3:%s"
+
     def get(self, request):
         rule_type = request.GET.get("rule")
         if rule_type not in ContestRuleType.choices():
             rule_type = ContestRuleType.ACM
+
+        try:
+            limit = int(request.GET.get("limit", "20"))
+            offset = int(request.GET.get("offset", "0"))
+        except ValueError:
+            limit, offset = 20, 0
+
+        ranked = self._ranked_rows(rule_type)
+        total = len(ranked)
+        page = ranked[offset:offset + limit]
+
+        # 只回查当页这几个用户的资料——全站的排名已经算好放在缓存里了
+        profiles = UserProfile.objects.filter(
+            user_id__in=[row[0] for row in page]
+        ).select_related("user").defer("acm_problems_status", "oi_problems_status")
+        by_id = {p.user_id: p for p in profiles}
+
+        ordered = []
+        for uid, score, submission, ac in page:
+            profile = by_id.get(uid)
+            if profile is None:      # 缓存写入后被删号的极端情况，跳过
+                continue
+            profile._combined_score = score
+            profile._combined_submission = submission
+            profile._combined_ac = ac
+            ordered.append(profile)
+
+        is_admin = request.user.is_authenticated and request.user.is_admin_role()
+        data = {
+            "results": RankInfoSerializer(ordered, many=True, context={"is_admin": is_admin}).data,
+            "total": total,
+            "is_admin": is_admin
+        }
+        return self.success(data)
+
+    def _ranked_rows(self, rule_type):
+        """取按名次排好、已过滤的 [(user_id, score, submission, ac), ...]。走 20 秒缓存。"""
+        import time as _time
+        from django.core.cache import cache
+
+        key = self.RANK_CACHE_KEY % rule_type
+        cached = cache.get(key)
+        if cached is not None and _time.time() - cached[0] < self.RANK_TTL:
+            return cached[1]
+
+        # 缓存过期时会有多个进程同时发现"没有"，只让抢到锁的那个去算，
+        # 其余的短暂等待后重读——否则高峰期一到期就是几十个请求同时算全站排名。
+        lock_key = key + ":lock"
+        if cache.add(lock_key, 1, 15):
+            try:
+                rows = self._compute_ranked_rows(rule_type)
+                # Redis 里多留一会儿，但上面的年龄判断才是真正生效的 20 秒
+                cache.set(key, (_time.time(), rows), self.RANK_TTL + 60)
+                return rows
+            finally:
+                cache.delete(lock_key)
+
+        for _ in range(10):
+            _time.sleep(0.1)
+            cached = cache.get(key)
+            if cached is not None and _time.time() - cached[0] < self.RANK_TTL:
+                return cached[1]
+        # 等不到就自己算：宁可多算一次，也不能让请求失败
+        return self._compute_ranked_rows(rule_type)
+
+    def _compute_ranked_rows(self, rule_type):
+        """全站重算排名。昂贵（约 1.5 秒），只在缓存未命中时调用。"""
         # defer 掉两个做题状态 JSON：排行榜不展示它们，但反序列化 5982 份要 2.9 秒
         profiles = UserProfile.objects.filter(
             user__admin_type=AdminType.REGULAR_USER, user__is_disabled=False
@@ -446,21 +517,8 @@ class UserRankAPI(APIView):
             all_profiles = [p for p in all_profiles if p._combined_score > 0]
             all_profiles.sort(key=lambda p: p._combined_score, reverse=True)
 
-        # Manually paginate since we have a list (not queryset)
-        try:
-            limit = int(request.GET.get("limit", "20"))
-            offset = int(request.GET.get("offset", "0"))
-        except ValueError:
-            limit, offset = 20, 0
-        total = len(all_profiles)
-        page = all_profiles[offset:offset + limit]
-        is_admin = request.user.is_authenticated and request.user.is_admin_role()
-        data = {
-            "results": RankInfoSerializer(page, many=True, context={"is_admin": is_admin}).data,
-            "total": total,
-            "is_admin": is_admin
-        }
-        return self.success(data)
+        return [(p.user_id, p._combined_score, p._combined_submission, p._combined_ac)
+                for p in all_profiles]
 
     @staticmethod
     def _contest_ac_counts(user_ids):
