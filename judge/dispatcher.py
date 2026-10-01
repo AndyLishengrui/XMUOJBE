@@ -114,7 +114,14 @@ class DispatcherBase(object):
         if data:
             kwargs["json"] = data
         try:
-            return requests.post(url, **kwargs).json()
+            # ⚠️ 超时是必须的：requests 默认**永不超时**。判题机若"接得住连接但不回响应"
+            # （进程 hung、卡在锁上、gunicorn 线程耗尽），这一行会**永久**占死一个
+            # dramatiq 线程（= 4 进程 × 4 线程 = 16 个，见 deploy/supervisord.conf）。
+            # 占满后全站提交永远停在"评测中"，学生只能反复重交。
+            # 给个宽裕但有界的值：连接 10 秒、读取 900 秒 —— 判题机要跑完全部测试点
+            # 才回响应，单题最多 200+ 个用例（实测最长单个用例 63 秒），
+            # 900 秒远高于任何合法判题，同时把"永久卡死"变成"最多卡 15 分钟"。
+            return requests.post(url, timeout=(10, 900), **kwargs).json()
         except Exception as e:
             logger.exception(e)
 
