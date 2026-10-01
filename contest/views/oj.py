@@ -21,6 +21,17 @@ from ..serializers import ContestSerializer, ContestPasswordVerifySerializer
 from ..serializers import OIContestRankSerializer, ACMContestRankSerializer
 
 
+# 比赛列表「点表头排序」允许的字段白名单（?ordering=start_time / -start_time …）。
+# ⚠️ 必须是白名单：用户输入直接丢给 order_by 等于允许按任意字段（含关联字段）排序。
+# 键 == 前端列的 key；不传 ordering 时**完全保持模型默认序**（Contest.Meta.ordering
+# = ("-start_time",)），线上老前端不传这个参数，它的结果必须逐字节不变。
+CONTEST_ORDERING_FIELDS = {
+    "title": "title",
+    "start_time": "start_time",
+    "end_time": "end_time",
+}
+
+
 class ContestAnnouncementListAPI(APIView):
     @check_contest_permission(check_type="announcements")
     def get(self, request):
@@ -96,6 +107,14 @@ class ContestListAPI(APIView):
                 contests = contests.filter(end_time__lt=cur)
             else:
                 contests = contests.filter(start_time__lte=cur, end_time__gte=cur)
+        # 表头点击排序（题目 / 开始时间 / 截止时间）。认不出的值一律忽略 ——
+        # 前端有个「任课老师」列仍是**前端当前页**排序，它不传这个参数。
+        ordering = request.GET.get("ordering")
+        if ordering:
+            field = CONTEST_ORDERING_FIELDS.get(ordering.lstrip("-"))
+            if field:
+                # 末尾补 id：时间相同的行之间顺序确定，翻页不会重复/漏行
+                contests = contests.order_by(("-" if ordering.startswith("-") else "") + field, "id")
         return self.success(self.paginate_data(request, contests, ContestSerializer))
 
 
