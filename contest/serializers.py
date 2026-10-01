@@ -16,6 +16,7 @@ class CreateConetestSeriaizer(serializers.Serializer):
     allowed_ip_ranges = serializers.ListField(child=serializers.CharField(max_length=32), allow_empty=True)
     is_exam = serializers.BooleanField(required=False, default=False)
     show_problem_links = serializers.BooleanField(required=False, default=False)
+    is_question_bank = serializers.BooleanField(required=False, default=False)
 
 
 class EditConetestSeriaizer(serializers.Serializer):
@@ -30,6 +31,8 @@ class EditConetestSeriaizer(serializers.Serializer):
     allowed_ip_ranges = serializers.ListField(child=serializers.CharField(max_length=32))
     is_exam = serializers.BooleanField(required=False)
     show_problem_links = serializers.BooleanField(required=False)
+    # 不给 default：老后台页不回传该字段时保持原值，不会被重置成 False
+    is_question_bank = serializers.BooleanField(required=False)
 
 
 class ContestAdminSerializer(serializers.ModelSerializer):

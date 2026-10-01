@@ -27,6 +27,9 @@ class Contest(models.Model):
     is_exam = models.BooleanField(default=False)
     # 是否向学生展示题目里的「参考题解 / 原题链接」（实验级；题目级可覆盖）
     show_problem_links = models.BooleanField(default=False)
+    # 题库（老师自编题单）而非课堂实验：决定它出现在「题库」还是「实验」列表里。
+    # 由后台比赛编辑页的显式开关决定，不靠标题关键词猜。
+    is_question_bank = models.BooleanField(default=False)
 
     @property
     def status(self):

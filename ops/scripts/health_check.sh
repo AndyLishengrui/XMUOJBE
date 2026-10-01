@@ -163,17 +163,23 @@ for js in judge-server judge-server-2; do
     fi
 done
 
-# 9d. Fix orphaned -2 submissions (stuck judging > 2 hours)
+# 9d. Fix orphaned JUDGING submissions (stuck > 2 hours)
+# ⚠️ 判据必须是 result = 7 (JudgeStatus.JUDGING)。这里曾经误写成 result = -2 ——
+#    那是「编译错误 COMPILE_ERROR」（submission/models.py），不是卡死状态。
+#    后果：把学生真实的编译错误静默改写成「答案错」，2026-07-08 起共开火 33 次
+#    （101~1021 行/次）。2026-10-01 发现并修正。
+#    重置目标用 5 (SYSTEM_ERROR)：与 dispatcher.py:238「判题机全都连不上」的处理一致，
+#    学生看到系统错误后可以重交，而不是永远停在「评测中」。
 ORPHANED=$(sudo docker exec oj-postgres psql -U onlinejudge -d onlinejudge -t -c \
-    "SELECT count(*) FROM submission WHERE result = -2 AND create_time < NOW() - INTERVAL '2 hours';" 2>/dev/null || echo 0)
+    "SELECT count(*) FROM submission WHERE result = 7 AND create_time < NOW() - INTERVAL '2 hours';" 2>/dev/null || echo 0)
 ORPHANED=$(echo "$ORPHANED" | tr -d ' ')
-if [ "$ORPHANED" -gt 100 ]; then
-    alert "Orphaned judging submissions: $ORPHANED (>2h stuck) — resetting to pending"
+if [ "${ORPHANED:-0}" -gt 0 ]; then
+    alert "Orphaned judging submissions: $ORPHANED (>2h stuck at JUDGING) — resetting to SYSTEM_ERROR"
     sudo docker exec oj-postgres psql -U onlinejudge -d onlinejudge -c \
-        "UPDATE submission SET result = -1 WHERE result = -2 AND create_time < NOW() - INTERVAL '2 hours';" 2>/dev/null || true
-    log "🔧 Reset $ORPHANED orphaned -2 submissions to -1"
+        "UPDATE submission SET result = 5 WHERE result = 7 AND create_time < NOW() - INTERVAL '2 hours';" 2>/dev/null || true
+    log "🔧 Reset $ORPHANED orphaned JUDGING submissions to SYSTEM_ERROR"
 else
-    log "✅ Orphaned -2 submissions: $ORPHANED (threshold: 100)"
+    log "✅ Orphaned JUDGING submissions: $ORPHANED (threshold: 0)"
 fi
 
 # 9e. Fix stuck judge-server task_number (negative or > cpu_core*2 for long)

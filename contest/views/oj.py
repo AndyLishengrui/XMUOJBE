@@ -68,6 +68,7 @@ class ContestListAPI(APIView):
         rule_type = request.GET.get("rule_type")
         status = request.GET.get("status")
         owner = request.GET.get("owner")
+        category = request.GET.get("category")
         if keyword:
             # 关键词除了标题，也匹配「创建者（任课老师）」的用户名/姓名，
             # 这样学生可以直接在比赛列表的搜索框里输入老师名字筛出自己班的实验，
@@ -79,6 +80,12 @@ class ContestListAPI(APIView):
             # 与后台比赛列表同款的「按老师过滤」
             contests = contests.filter(Q(created_by__username__icontains=owner) |
                                        Q(created_by__userprofile__real_name__icontains=owner))
+        # 「实验」与「题库」分列表。⚠️ 不传/其它值 → 一律不过滤：
+        # 生产上的老前端从不传 category，它拿全量后自己过滤，行为必须逐字节不变。
+        if category == "experiment":
+            contests = contests.filter(is_question_bank=False)
+        elif category == "question_bank":
+            contests = contests.filter(is_question_bank=True)
         if rule_type:
             contests = contests.filter(rule_type=rule_type)
         if status:
