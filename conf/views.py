@@ -219,16 +219,18 @@ class TestCasePruneAPI(APIView):
 
 class ReleaseNotesAPI(APIView):
     def get(self, request):
+        # 本站已是独立分支，**不再联网回上游作者仓库**取更新说明。
+        # 原实现是拉 raw.githubusercontent.com/QingdaoU/OnlineJudge/master/docs/data.json ——
+        # 既是对上游的对外联系，国内还经常 3 秒超时（日志里 /api/admin/versions 最慢 6.7 秒就是它）。
+        # 现在只回本地 docs/data.json。
         try:
-            resp = requests.get("https://raw.githubusercontent.com/QingdaoU/OnlineJudge/master/docs/data.json?_=" + str(time.time()),
-                                timeout=3)
-            releases = resp.json()
-        except (RequestException, ValueError):
+            with open("docs/data.json", "r") as f:
+                local = json.load(f)
+            local_version = local["update"][0]["version"]
+        except (IOError, OSError, ValueError, KeyError, IndexError):
             return self.success()
-        with open("docs/data.json", "r") as f:
-            local_version = json.load(f)["update"][0]["version"]
-        releases["local_version"] = local_version
-        return self.success(releases)
+        local["local_version"] = local_version
+        return self.success(local)
 
 
 class DashboardInfoAPI(APIView):
