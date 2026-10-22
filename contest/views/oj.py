@@ -1,7 +1,7 @@
 import io
 
 import xlsxwriter
-from django.db.models import Q
+from django.db.models import Count, Q
 from django.http import HttpResponse
 from django.utils.timezone import now
 from django.core.cache import cache
@@ -116,6 +116,43 @@ class ContestListAPI(APIView):
                 # 末尾补 id：时间相同的行之间顺序确定，翻页不会重复/漏行
                 contests = contests.order_by(("-" if ordering.startswith("-") else "") + field, "id")
         return self.success(self.paginate_data(request, contests, ContestSerializer))
+
+
+class ContestTeacherListAPI(APIView):
+    """比赛列表页「任课老师」下拉的候选项。
+
+    只列**至少有一场可见比赛**的创建者 —— 这样下拉里每一条点下去都有结果，
+    不会出现选了某位老师却一场都筛不出来的死选项。category 语义与 ContestListAPI
+    完全一致（experiment / question_bank），保证下拉里的人数与列表页当前分类对得上。
+    """
+
+    def get(self, request):
+        contests = Contest.objects.filter(visible=True)
+        category = request.GET.get("category")
+        if category == "experiment":
+            contests = contests.filter(is_question_bank=False)
+        elif category == "question_bank":
+            contests = contests.filter(is_question_bank=True)
+        # ⚠️ 必须先 order_by() 清掉模型的默认序（Contest.Meta.ordering = ("-start_time",)）：
+        #    values()+annotate() 会把默认序的字段**一并塞进 GROUP BY**，于是同一个人
+        #    按 start_time 被拆成好几行、count 全是碎的小数字（实测 andy 变成 4 行 x2）。
+        rows = (contests
+                .order_by()
+                .values("created_by__username", "created_by__userprofile__real_name")
+                .annotate(count=Count("id")))
+        data = []
+        for row in rows:
+            username = row["created_by__username"]
+            real_name = (row["created_by__userprofile__real_name"] or "").strip()
+            data.append({
+                # 用户名是身份，中文名只用来显示；前端把 username 塞进 ?owner=，
+                # 后端 ContestListAPI 的 owner 过滤对两者都做 icontains ⇒ 天然兼容。
+                "username": username,
+                "real_name": real_name or username,
+                "count": row["count"],
+            })
+        data.sort(key=lambda x: (-x["count"], x["real_name"]))
+        return self.success(data)
 
 
 class ContestPasswordVerifyAPI(APIView):
