@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 
 from django.utils import timezone
 
+from account.models import UserProfile
 from utils.api.tests import APITestCase
 from problem.models import Problem
 from submission.models import Submission, JudgeStatus
@@ -20,7 +21,7 @@ DEFAULT_CONTEST_DATA = {"title": "test title", "description": "test description"
 
 class ContestAdminAPITest(APITestCase):
     def setUp(self):
-        self.create_super_admin()
+        self.user = self.create_super_admin()
         self.url = self.reverse("contest_admin_api")
         self.data = copy.deepcopy(DEFAULT_CONTEST_DATA)
 
@@ -118,6 +119,113 @@ class ContestAdminAPITest(APITestCase):
         resp_mismatch = self.client.get(self.url + "?keyword=Graph&owner=nonexistent")
         self.assertSuccess(resp_mismatch)
         self.assertEqual(resp_mismatch.data["data"]["total"], 0)
+
+    # ── 2026-10-22：后台列表的排序 / 过滤 / 老师下拉 ──────────────────────────
+    def _create_contest(self, owner=None, **overrides):
+        data = copy.deepcopy(DEFAULT_CONTEST_DATA)
+        data.update(overrides)
+        return Contest.objects.create(created_by=owner or self.user, **data)
+
+    def test_admin_list_ordering_and_stable_tiebreak(self):
+        self._create_contest(title="B contest")
+        self._create_contest(title="A contest")
+        self._create_contest(title="C contest")
+        # 同名两场：靠末尾 id 保证翻页稳定
+        same1 = self._create_contest(title="Same title")
+        same2 = self._create_contest(title="Same title")
+
+        resp = self.client.get(self.url + "?ordering=title")
+        self.assertSuccess(resp)
+        self.assertEqual([c["title"] for c in resp.data["data"]["results"]],
+                         ["A contest", "B contest", "C contest", "Same title", "Same title"])
+
+        resp = self.client.get(self.url + "?ordering=-title")
+        self.assertSuccess(resp)
+        self.assertEqual([c["title"] for c in resp.data["data"]["results"]],
+                         ["Same title", "Same title", "C contest", "B contest", "A contest"])
+        same_ids = [c["id"] for c in resp.data["data"]["results"] if c["title"] == "Same title"]
+        self.assertEqual(same_ids, sorted([same1.id, same2.id]))
+
+        # 非白名单字段一律忽略（仍返回 200，默认序）
+        resp = self.client.get(self.url + "?ordering=description")
+        self.assertSuccess(resp)
+        self.assertEqual(resp.data["data"]["total"], 5)
+
+        # 时间排序
+        self._create_contest(title="old", start_time=timezone.now() - timedelta(days=2),
+                             end_time=timezone.now() - timedelta(days=1))
+        resp = self.client.get(self.url + "?ordering=start_time")
+        self.assertSuccess(resp)
+        self.assertEqual(resp.data["data"]["results"][0]["title"], "old")
+        resp = self.client.get(self.url + "?ordering=-start_time")
+        self.assertSuccess(resp)
+        self.assertNotEqual(resp.data["data"]["results"][0]["title"], "old")
+
+    def test_admin_list_status_and_rule_type_filters(self):
+        self._create_contest(title="ended",
+                             start_time=timezone.now() - timedelta(days=2),
+                             end_time=timezone.now() - timedelta(days=1))
+        self._create_contest(title="underway")
+        self._create_contest(title="upcoming",
+                             start_time=timezone.now() + timedelta(days=1),
+                             end_time=timezone.now() + timedelta(days=2))
+        self._create_contest(title="oi contest", rule_type=ContestRuleType.OI)
+
+        for status, expected in (("-1", 1), ("0", 2), ("1", 1)):
+            resp = self.client.get(self.url + "?status=" + status)
+            self.assertSuccess(resp)
+            self.assertEqual(resp.data["data"]["total"], expected, status)
+
+        resp = self.client.get(self.url + "?rule_type=OI")
+        self.assertSuccess(resp)
+        self.assertEqual(resp.data["data"]["total"], 1)
+        resp = self.client.get(self.url + "?rule_type=NOT_A_RULE")
+        self.assertSuccess(resp)
+        self.assertEqual(resp.data["data"]["total"], 4)
+
+    def test_admin_list_owner_matches_real_name(self):
+        owner = self.create_admin("owner_real_name", "owner123", login=False)
+        profile = UserProfile.objects.get(user=owner)
+        profile.real_name = "李胜睿"
+        profile.save(update_fields=["real_name"])
+        self._create_contest(owner=owner, title="real name contest")
+
+        self.client.logout()
+        self.client.login(username="root", password="root")
+        resp = self.client.get(self.url + "?owner=李胜睿")
+        self.assertSuccess(resp)
+        self.assertEqual(resp.data["data"]["total"], 1)
+        resp = self.client.get(self.url + "?owner=owner_real")
+        self.assertSuccess(resp)
+        self.assertEqual(resp.data["data"]["total"], 1)
+
+    def test_admin_contest_teachers_scope_count_and_invisible(self):
+        self.client.logout()
+        admin_a = self.create_admin("teachers_a", "teachers_a_123", login=False)
+        admin_b = self.create_admin("teachers_b", "teachers_b_123", login=False)
+        UserProfile.objects.filter(user=admin_a).update(real_name="张老师")
+        UserProfile.objects.filter(user=admin_b).update(real_name="李老师")
+
+        self._create_contest(owner=admin_a, title="a1")
+        self._create_contest(owner=admin_a, title="a2", visible=False)
+        self._create_contest(owner=admin_b, title="b1")
+
+        url = self.reverse("contest_teacher_list_admin_api")
+        self.client.logout()
+        self.client.login(username="root", password="root")
+        resp = self.client.get(url)
+        self.assertSuccess(resp)
+        rows = resp.data["data"]
+        self.assertEqual([(r["username"], r["real_name"], r["count"]) for r in rows],
+                         [("teachers_a", "张老师", 2), ("teachers_b", "李老师", 1)])
+
+        # Admin 只看自己（含不可见）的比赛
+        self.client.logout()
+        self.client.login(username="teachers_a", password="teachers_a_123")
+        resp = self.client.get(url)
+        self.assertSuccess(resp)
+        rows = resp.data["data"]
+        self.assertEqual([(r["username"], r["count"]) for r in rows], [("teachers_a", 2)])
 
     def test_get_one_contest(self):
         id = self.test_create_contest().data["data"]["id"]

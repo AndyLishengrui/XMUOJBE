@@ -5,14 +5,16 @@ from ipaddress import ip_network
 
 import dateutil.parser
 from django.db import OperationalError, ProgrammingError, connection, transaction
+from django.db.models import Count, Q
 from django.http import FileResponse
+from django.utils.timezone import now
 
 from account.decorators import check_contest_permission, ensure_created_by
 from account.models import User
 from submission.models import Submission, JudgeStatus
 from utils.api import APIView, validate_serializer
 from utils.cache import cache
-from utils.constants import CacheKey, ContestStatus
+from utils.constants import CacheKey, ContestRuleType, ContestStatus
 from utils.shortcuts import rand_str
 from utils.tasks import delete_files
 from ..models import Contest, ContestAnnouncement, ACMContestRank, OIContestRank
@@ -20,6 +22,19 @@ from ..serializers import (ContestAnnouncementSerializer, ContestAdminSerializer
                            CreateConetestSeriaizer, CreateContestAnnouncementSerializer,
                            EditConetestSeriaizer, EditContestAnnouncementSerializer,
                            ACMContesHelperSerializer, )
+
+
+# 后台比赛列表「点表头排序」允许的字段白名单（?ordering=start_time / -start_time …）。
+# 键 == 前端传的排序键；值 == 实际 order_by 的字段序列（owner 先按中文名、再按用户名）。
+# ⚠️ 不在白名单里的值一律忽略 —— 绝不能把用户输入直接丢给 order_by。
+ADMIN_CONTEST_ORDERING_FIELDS = {
+    "id": ("id",),
+    "title": ("title",),
+    "owner": ("created_by__userprofile__real_name", "created_by__username"),
+    "start_time": ("start_time",),
+    "end_time": ("end_time",),
+    "create_time": ("create_time",),
+}
 
 
 class ContestAPI(APIView):
@@ -79,7 +94,8 @@ class ContestAPI(APIView):
             except Contest.DoesNotExist:
                 return self.error("Contest does not exist")
 
-        contests = Contest.objects.select_related('created_by').all().order_by("-create_time")
+        contests = Contest.objects.select_related(
+            'created_by', 'created_by__userprofile').all().order_by("-create_time")
         if request.user.is_admin():
             contests = contests.filter(created_by=request.user)
 
@@ -88,7 +104,32 @@ class ContestAPI(APIView):
             contests = contests.filter(title__icontains=keyword)
         owner = request.GET.get("owner")
         if owner:
-            contests = contests.filter(created_by__username__icontains=owner)
+            # 与公开列表同款：用户名或中文姓名都能筛。下拉传的是 username，
+            # 但老链接/手输中文名（2026-09-22 那版分享格式）也必须能用。
+            contests = contests.filter(Q(created_by__username__icontains=owner) |
+                                       Q(created_by__userprofile__real_name__icontains=owner))
+        rule_type = request.GET.get("rule_type")
+        if rule_type in (ContestRuleType.ACM, ContestRuleType.OI):
+            contests = contests.filter(rule_type=rule_type)
+        status = request.GET.get("status")
+        if status:
+            # 与公开 ContestListAPI 完全一致的语义；非法值自然落入「不过滤」。
+            cur = now()
+            if status == ContestStatus.CONTEST_NOT_START:
+                contests = contests.filter(start_time__gt=cur)
+            elif status == ContestStatus.CONTEST_ENDED:
+                contests = contests.filter(end_time__lt=cur)
+            elif status == ContestStatus.CONTEST_UNDERWAY:
+                contests = contests.filter(start_time__lte=cur, end_time__gte=cur)
+        # 表头点击排序。认不出的值一律忽略（保持默认 -create_time）。
+        ordering = request.GET.get("ordering")
+        if ordering:
+            fields = ADMIN_CONTEST_ORDERING_FIELDS.get(ordering.lstrip("-"))
+            if fields:
+                desc = ordering.startswith("-")
+                # 末尾补 id：时间/姓名相同的行之间顺序确定，翻页不会重复或漏行。
+                contests = contests.order_by(
+                    *[("-" if desc else "") + field for field in fields], "id")
         return self.success(self.paginate_data(request, contests, ContestAdminSerializer))
 
     def delete(self, request):
@@ -140,6 +181,33 @@ class ContestAPI(APIView):
             contest.save(update_fields=["visible"])
         cache.delete(cache_key)
         return self.success({"id": contest.id, "mode": "soft", "visible": contest.visible})
+
+
+class ContestTeacherListAPI(APIView):
+    """后台比赛列表「任课老师」下拉的候选项。
+
+    与公开 /api/contest_teachers 的区别：后台要管理**不可见**的比赛，
+    所以这里不按 visible 过滤；scope 与后台列表完全一致
+    （Admin 只统计自己的比赛，Super Admin 统计全部）。
+    """
+
+    def get(self, request):
+        contests = Contest.objects.all()
+        if request.user.is_admin():
+            contests = contests.filter(created_by=request.user)
+        # ⚠️ 必须先 order_by() 清掉模型默认序（Contest.Meta.ordering = ("-start_time",)）：
+        #    values()+annotate() 会把默认序字段一并塞进 GROUP BY ⇒ 同一个人被拆成多行。
+        rows = (contests
+                .order_by()
+                .values("created_by__username", "created_by__userprofile__real_name")
+                .annotate(count=Count("id")))
+        data = [{
+            "username": row["created_by__username"],
+            "real_name": (row["created_by__userprofile__real_name"] or "").strip(),
+            "count": row["count"],
+        } for row in rows]
+        data.sort(key=lambda x: (-x["count"], x["real_name"], x["username"]))
+        return self.success(data)
 
 
 class ContestAnnouncementAPI(APIView):
